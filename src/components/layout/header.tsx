@@ -2,7 +2,7 @@
 
 import { Bell, Search, Moon, Sun, LogOut, User, Settings, ChevronDown, Globe } from "lucide-react";
 import { useTheme } from "next-themes";
-import { signOut } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "./command-palette";
@@ -12,12 +12,22 @@ import { SUPPORTED_LANGUAGES } from "@/lib/i18n/translations";
 export function DashboardHeader() {
   const { theme, setTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
+  const { data: session } = useSession();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
   const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === language) || SUPPORTED_LANGUAGES[0];
+
+  const userName = session?.user?.name || "User";
+  const userEmail = session?.user?.email || "";
+  const userInitials = userName
+    .split(" ")
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
@@ -180,10 +190,10 @@ export function DashboardHeader() {
             className="flex items-center gap-2 rounded-lg border px-3 py-1.5 transition-colors hover:bg-muted"
           >
             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 text-[10px] font-bold text-white">
-              AB
+              {userInitials}
             </div>
             <span className="hidden text-sm font-medium sm:block">
-              Admin User
+              {userName}
             </span>
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
           </button>
@@ -191,9 +201,9 @@ export function DashboardHeader() {
           {showUserMenu && (
             <div className="absolute right-0 top-11 z-50 w-52 rounded-xl border bg-card shadow-xl animate-scale-in">
               <div className="border-b px-4 py-3">
-                <p className="text-sm font-medium">Admin User</p>
+                <p className="text-sm font-medium">{userName}</p>
                 <p className="text-xs text-muted-foreground">
-                  admin@example.com
+                  {userEmail}
                 </p>
               </div>
               <div className="p-1">

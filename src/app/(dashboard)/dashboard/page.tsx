@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DashboardOverview } from "@/components/dashboard/overview";
 import { getTenantContext } from "@/lib/tenant";
 import { prisma } from "@/lib/db";
+import { SetupBanner } from "@/components/onboarding/setup-banner";
 
 export const metadata: Metadata = {
   title: "Dashboard | Zentravo BMS",
@@ -38,7 +39,7 @@ export default async function DashboardPage() {
       recentSalesList,
       dailySalesRaw,
     ] = await Promise.all([
-      prisma.business.findUnique({ where: { id: tenant.businessId }, select: { name: true } }),
+      prisma.business.findUnique({ where: { id: tenant.businessId }, select: { name: true, onboardingCompleted: true } }),
       tenant.branchId ? prisma.branch.findUnique({ where: { id: tenant.branchId }, select: { name: true } }) : null,
       prisma.sale.aggregate({
         where: { businessId: tenant.businessId, status: "COMPLETED", createdAt: { gte: todayStart } },
@@ -205,14 +206,21 @@ export default async function DashboardPage() {
     }));
 
     return (
-      <DashboardOverview
-        initialMetrics={realMetrics}
-        initialTopProducts={realTopProducts.length > 0 ? realTopProducts : undefined}
-        initialRecentSales={realRecentSales.length > 0 ? realRecentSales : undefined}
-        initialSalesData={realSalesData.length > 0 ? realSalesData : undefined}
-        businessName={business?.name}
-        branchName={branch?.name}
-      />
+      <>
+        {business && !business.onboardingCompleted && (
+          <div className="mb-6">
+            <SetupBanner businessName={business.name} />
+          </div>
+        )}
+        <DashboardOverview
+          initialMetrics={realMetrics}
+          initialTopProducts={realTopProducts.length > 0 ? realTopProducts : undefined}
+          initialRecentSales={realRecentSales.length > 0 ? realRecentSales : undefined}
+          initialSalesData={realSalesData.length > 0 ? realSalesData : undefined}
+          businessName={business?.name}
+          branchName={branch?.name}
+        />
+      </>
     );
   } catch (error) {
     console.warn("Failed to fetch dynamic dashboard stats, falling back to defaults:", error);
