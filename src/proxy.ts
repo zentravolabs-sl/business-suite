@@ -28,7 +28,7 @@ async function hasValidAdminSession(req: NextRequest): Promise<boolean> {
   }
 }
 
-export default auth(async function middleware(req: NextRequest & { auth: unknown }) {
+export const proxy = auth(async function proxy(req: NextRequest & { auth: unknown }) {
   const { nextUrl } = req;
   const isLoggedIn = !!(req as unknown as { auth: { user?: unknown } | null }).auth?.user;
   const pathname = nextUrl.pathname;
@@ -90,4 +90,3 @@ export const config = {
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
-
