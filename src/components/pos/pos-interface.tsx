@@ -351,7 +351,7 @@ export function PosInterface({
   });
 
   return (
-    <div className="flex flex-col h-[calc(100vh-5.5rem)] overflow-hidden gap-3">
+    <div className="flex flex-col h-[calc(100vh-7rem)] overflow-hidden gap-3">
       {/* 1. POS Top Bar */}
       <div className="flex items-center justify-between rounded-2xl border bg-card px-4 py-2.5 shadow-sm">
         <div className="flex items-center gap-3">

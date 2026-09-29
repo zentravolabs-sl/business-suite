@@ -300,17 +300,17 @@ export function DashboardOverview({
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
             {todayStr} — {businessName || "ABC Electronics"}{branchName ? `, ${branchName}` : ", Colombo Branch"}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <a
             href="/dashboard/pos"
-            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors whitespace-nowrap"
           >
             Open POS
           </a>
@@ -318,7 +318,7 @@ export function DashboardOverview({
       </div>
 
       {/* Metric cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {activeMetrics.map((metric) => (
           <MetricCard key={metric.title} {...metric} />
         ))}
@@ -327,7 +327,7 @@ export function DashboardOverview({
       {/* Charts row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Sales trend */}
-        <div className="col-span-2 rounded-xl border bg-card p-5">
+        <div className="col-span-1 lg:col-span-2 rounded-xl border bg-card p-4 sm:p-5">
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="text-base font-semibold">Sales & Profit Trend</h2>
@@ -356,7 +356,7 @@ export function DashboardOverview({
                   <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
               <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
                 tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />

@@ -29,6 +29,7 @@ import {
   Boxes,
   FileText,
   DollarSign,
+  X,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useLanguage } from "@/context/language-context";
@@ -195,9 +196,10 @@ interface SidebarNavItemProps {
   item: NavItem;
   level?: number;
   modules: BusinessModules;
+  onNavigate?: () => void;
 }
 
-function SidebarNavItem({ item, level = 0, modules }: SidebarNavItemProps) {
+function SidebarNavItem({ item, level = 0, modules, onNavigate }: SidebarNavItemProps) {
   const pathname = usePathname();
   const { t } = useLanguage();
   const [isOpen, setIsOpen] = useState(false);
@@ -238,7 +240,7 @@ function SidebarNavItem({ item, level = 0, modules }: SidebarNavItemProps) {
         {isOpen && (
           <div className="ml-4 mt-0.5 space-y-0.5 border-l border-sidebar-border pl-2">
             {visibleChildren?.map((child) => (
-              <SidebarNavItem key={child.href || child.title} item={child} level={level + 1} modules={modules} />
+              <SidebarNavItem key={child.href || child.title} item={child} level={level + 1} modules={modules} onNavigate={onNavigate} />
             ))}
           </div>
         )}
@@ -249,6 +251,7 @@ function SidebarNavItem({ item, level = 0, modules }: SidebarNavItemProps) {
   return (
     <Link
       href={item.href ?? "#"}
+      onClick={onNavigate}
       className={cn(
         "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150",
         "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent",
@@ -275,7 +278,14 @@ const DEFAULT_MODULES: BusinessModules = {
   loyaltyEnabled: false,
 };
 
-export function DashboardSidebar() {
+interface DashboardSidebarProps {
+  /** Mobile: whether the drawer is open */
+  isOpen?: boolean;
+  /** Mobile: callback to close the drawer */
+  onClose?: () => void;
+}
+
+export function DashboardSidebar({ isOpen, onClose }: DashboardSidebarProps) {
   const { data: session } = useSession();
   const user = session?.user as any;
   const activeBusiness = user?.businesses?.[0];
@@ -303,24 +313,54 @@ export function DashboardSidebar() {
       .catch(() => setModulesLoaded(true));
   }, [session]);
 
+  // Close on ESC key
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isOpen, onClose]);
+
+  // Prevent body scroll when mobile sidebar is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [isOpen]);
+
   // Filter top-level nav items by module flags
   const visibleNavItems = navItems.filter(
     (item) => !item.moduleKey || modules[item.moduleKey]
   );
 
-  return (
-    <aside className="flex h-full w-64 flex-col bg-sidebar-background">
+  const sidebarContent = (
+    <aside className="flex h-full w-64 flex-col bg-sidebar shrink-0">
       {/* Logo */}
       <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg">
           <Globe className="h-4 w-4 text-white" />
         </div>
-        <div>
+        <div className="flex-1">
           <p className="text-sm font-bold text-sidebar-foreground">Zentravo</p>
           <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest">
             Business Suite
           </p>
         </div>
+        {/* Close button — mobile only */}
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="lg:hidden flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+            aria-label="Close sidebar"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
       </div>
 
       {/* Navigation */}
@@ -334,15 +374,20 @@ export function DashboardSidebar() {
           </div>
         ) : (
           visibleNavItems.map((item) => (
-            <SidebarNavItem key={item.title} item={item} modules={modules} />
+            <SidebarNavItem key={item.title} item={item} modules={modules} onNavigate={onClose} />
           ))
         )}
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-sidebar-border p-3">
-        <div className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-sidebar-accent/50 transition-colors">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sidebar-primary/20 text-sidebar-primary text-xs font-bold shrink-0">
+      <div className="border-t border-sidebar-border p-3 space-y-1">
+        <Link
+          href="/dashboard/settings"
+          onClick={onClose}
+          className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-sidebar-accent/60 transition-colors group"
+          title={businessName}
+        >
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/30 to-indigo-600/30 text-sidebar-primary text-xs font-bold shrink-0 ring-1 ring-sidebar-primary/20">
             {initials}
           </div>
           <div className="flex-1 min-w-0">
@@ -353,8 +398,41 @@ export function DashboardSidebar() {
               {branchName}
             </p>
           </div>
-        </div>
+        </Link>
       </div>
     </aside>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar — always visible on lg+ */}
+      <div className="hidden lg:flex h-full">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile sidebar — slide-in drawer */}
+      {isOpen !== undefined && (
+        <>
+          {/* Backdrop */}
+          <div
+            className={cn(
+              "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden transition-opacity duration-300",
+              isOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+            )}
+            onClick={onClose}
+            aria-hidden="true"
+          />
+          {/* Drawer */}
+          <div
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 lg:hidden transition-transform duration-300 ease-in-out",
+              isOpen ? "translate-x-0" : "-translate-x-full"
+            )}
+          >
+            {sidebarContent}
+          </div>
+        </>
+      )}
+    </>
   );
 }

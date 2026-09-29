@@ -164,6 +164,11 @@
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-muted-foreground/40;
   }
+
+  /* Improve focus rings across all interactive elements */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
 }
 
 @layer components {
@@ -183,7 +188,8 @@
   /* Metric card */
   .metric-card {
     @apply rounded-xl border bg-card p-5 transition-all duration-200;
-    @apply hover:shadow-md hover:-translate-y-0.5;
+    @apply hover:shadow-lg hover:-translate-y-0.5;
+    @apply dark:hover:shadow-primary/5;
   }
 
   /* Status badges */
@@ -228,5 +234,21 @@
   @keyframes scaleIn {
     from { opacity: 0; transform: scale(0.95); }
     to { opacity: 1; transform: scale(1); }
+  }
+
+  /* Mobile utilities */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Improve tap targets and remove tap delay on mobile */
+  button,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
   }
 }

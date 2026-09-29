@@ -1,15 +1,19 @@
 "use client";
 
-import { Bell, Search, Moon, Sun, LogOut, User, Settings, ChevronDown, Globe } from "lucide-react";
+import { Bell, Search, Moon, Sun, LogOut, User, Settings, ChevronDown, Globe, Menu } from "lucide-react";
 import { useTheme } from "next-themes";
 import { signOut, useSession } from "next-auth/react";
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "./command-palette";
 import { useLanguage } from "@/context/language-context";
 import { SUPPORTED_LANGUAGES } from "@/lib/i18n/translations";
 
-export function DashboardHeader() {
+interface DashboardHeaderProps {
+  onMenuToggle?: () => void;
+}
+
+export function DashboardHeader({ onMenuToggle }: DashboardHeaderProps = {}) {
   const { theme, setTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
   const { data: session } = useSession();
@@ -18,7 +22,33 @@ export function DashboardHeader() {
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
 
+  // Refs for click-outside detection
+  const langRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
+  const userRef = useRef<HTMLDivElement>(null);
+
+  const closeAll = useCallback(() => {
+    setShowLanguageMenu(false);
+    setShowNotifications(false);
+    setShowUserMenu(false);
+  }, []);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      const clickedLang = langRef.current?.contains(target);
+      const clickedNotif = notifRef.current?.contains(target);
+      const clickedUser = userRef.current?.contains(target);
+      if (!clickedLang && !clickedNotif && !clickedUser) {
+        closeAll();
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [closeAll]);
+
   const currentLang = SUPPORTED_LANGUAGES.find((l) => l.code === language) || SUPPORTED_LANGUAGES[0];
+
 
   const userName = session?.user?.name || "User";
   const userEmail = session?.user?.email || "";
@@ -30,12 +60,22 @@ export function DashboardHeader() {
     .toUpperCase();
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-background px-6">
-      {/* Search */}
-      <div className="flex items-center gap-2 flex-1 max-w-md">
+    <header className="flex h-16 items-center justify-between border-b bg-background px-3 sm:px-6">
+      {/* Left: hamburger (mobile) + search */}
+      <div className="flex items-center gap-2 flex-1 min-w-0">
+        {/* Hamburger — mobile only */}
+        <button
+          onClick={onMenuToggle}
+          className="lg:hidden flex h-9 w-9 items-center justify-center rounded-lg border transition-colors hover:bg-muted shrink-0"
+          aria-label="Open navigation menu"
+        >
+          <Menu className="h-4 w-4" />
+        </button>
+
+        {/* Search — hidden on very small screens, shown as icon on sm */}
         <div
           onClick={() => setShowCommandPalette(true)}
-          className="relative w-full cursor-pointer"
+          className="relative flex-1 max-w-md cursor-pointer hidden sm:block"
         >
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -48,17 +88,26 @@ export function DashboardHeader() {
               "placeholder:text-muted-foreground"
             )}
           />
-          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-1 text-[10px] text-muted-foreground">
+          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-1 text-[10px] text-muted-foreground">
             <span className="border rounded px-1">Ctrl</span>
             <span className="border rounded px-1">K</span>
           </kbd>
         </div>
+
+        {/* Search icon button — xs screens only */}
+        <button
+          onClick={() => setShowCommandPalette(true)}
+          className="sm:hidden flex h-9 w-9 items-center justify-center rounded-lg border transition-colors hover:bg-muted"
+          aria-label="Search"
+        >
+          <Search className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Right side actions */}
       <div className="flex items-center gap-2">
         {/* Language selector */}
-        <div className="relative">
+        <div ref={langRef} className="relative">
           <button
             onClick={() => setShowLanguageMenu(!showLanguageMenu)}
             className="flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors hover:bg-muted"
@@ -105,7 +154,7 @@ export function DashboardHeader() {
         </button>
 
         {/* Notifications */}
-        <div className="relative">
+        <div ref={notifRef} className="relative">
           <button
             onClick={() => setShowNotifications(!showNotifications)}
             className="relative flex h-9 w-9 items-center justify-center rounded-lg border transition-colors hover:bg-muted"
@@ -184,7 +233,7 @@ export function DashboardHeader() {
         </div>
 
         {/* User menu */}
-        <div className="relative">
+        <div ref={userRef} className="relative">
           <button
             onClick={() => setShowUserMenu(!showUserMenu)}
             className="flex items-center gap-2 rounded-lg border px-3 py-1.5 transition-colors hover:bg-muted"
