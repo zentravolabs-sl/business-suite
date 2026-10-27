@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 import { CommandPalette } from "./command-palette";
 import { useLanguage } from "@/context/language-context";
 import { SUPPORTED_LANGUAGES } from "@/lib/i18n/translations";
+import { handleSafeSignOut } from "@/lib/pos/device-auth";
+import { toast } from "sonner";
 
 interface DashboardHeaderProps {
   onMenuToggle?: () => void;
@@ -270,7 +272,19 @@ export function DashboardHeader({ onMenuToggle }: DashboardHeaderProps = {}) {
                   </a>
                 ))}
                 <button
-                  onClick={() => signOut()}
+                  onClick={async () => {
+                    try {
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      const activeBusiness = (session?.user as any)?.businesses?.[0];
+                      const result = await handleSafeSignOut(activeBusiness?.businessId, session?.user?.id);
+                      if (result.hasUnsyncedSales) {
+                        toast.warning(result.warning || "Unsynced offline sales are safely preserved.");
+                      }
+                    } catch {
+                      // ignore
+                    }
+                    await signOut({ callbackUrl: "/login" });
+                  }}
                   className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
                 >
                   <LogOut className="h-4 w-4" />

@@ -2,12 +2,19 @@
 
 import { useRef } from "react";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
-import { Printer, Check, X, QrCode, Send, AlertTriangle } from "lucide-react";
+import { Printer, Check, X, Send, AlertTriangle } from "lucide-react";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ThermalReceiptSale = Record<string, any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ThermalReceiptItem = Record<string, any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ThermalReceiptTaxDoc = Record<string, any>;
 
 interface ThermalReceiptModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  sale: any;
+  sale: ThermalReceiptSale | null;
   onNewSale: () => void;
 }
 
@@ -31,7 +38,7 @@ export function ThermalReceiptModal({
     const invNo = sale.invoiceNumber;
     const itemsSummary = (sale.items || [])
       .slice(0, 5)
-      .map((it: any) => `• ${it.name} (x${it.quantity}) - Rs. ${it.total ? Number(it.total).toLocaleString() : (it.unitPrice * it.quantity).toLocaleString()}`)
+      .map((it: ThermalReceiptItem) => `• ${it.name} (x${it.quantity}) - Rs. ${it.total ? Number(it.total).toLocaleString() : (Number(it.unitPrice || 0) * it.quantity).toLocaleString()}`)
       .join("\n");
     const msg =
       `*TAX INVOICE / RECEIPT - ${bizName}*\n\n` +
@@ -89,32 +96,83 @@ export function ThermalReceiptModal({
             </div>
             {sale.phone && <div className="text-[10px] text-gray-700">Tel: {sale.phone}</div>}
 
-            {/* VAT Reg No */}
-            {sale.vatNumber && (
+            {/* VAT Reg No & TIN */}
+            {sale.seller?.tin && (
               <div className="text-[10px] font-bold text-gray-900 mt-1">
-                VAT Reg No: {sale.vatNumber}
+                TIN: {sale.seller.tin}
+              </div>
+            )}
+            {(sale.vatNumber || sale.seller?.vatNumber) && (
+              <div className="text-[10px] font-bold text-gray-900">
+                VAT Reg No: {sale.seller?.vatNumber || sale.vatNumber}
               </div>
             )}
 
-            <div className="text-[11px] font-extrabold uppercase border-y border-black py-0.5 mt-2">
-              *** TAX INVOICE ***
+            <div className="text-[11px] font-extrabold uppercase border-y border-black py-0.5 mt-2 text-center">
+              {sale.isOffline
+                ? "*** PROVISIONAL SALES RECEIPT ***"
+                : sale.seller?.vatStatus === "REGISTERED" && sale.taxDocuments?.some((d: ThermalReceiptTaxDoc) => d.documentType === "TAX_INVOICE")
+                ? "*** TAX INVOICE ***"
+                : "*** SALES RECEIPT ***"}
             </div>
+            {sale.isOffline && (
+              <div className="text-[9px] font-bold text-center border-b border-black py-1 text-gray-800">
+                PROVISIONAL RECEIPT — NOT A FINAL TAX INVOICE
+                <br />
+                Official tax invoice will be assigned upon cloud sync.
+              </div>
+            )}
           </div>
 
           {/* Meta */}
           <div className="py-2.5 border-b border-dashed border-gray-400 space-y-0.5 text-[10px]">
-            <div className="flex justify-between">
-              <span>Invoice #:</span>
-              <span className="font-bold">{sale.invoiceNumber}</span>
-            </div>
+            {sale.isOffline ? (
+              <div className="flex justify-between font-bold text-gray-900">
+                <span>Provisional Doc #:</span>
+                <span className="font-mono">{sale.provisionalReceiptNumber || sale.offlineId}</span>
+              </div>
+            ) : (
+              <>
+                {sale.taxDocuments?.find((d: ThermalReceiptTaxDoc) => d.documentType === "TAX_INVOICE")?.documentNumber && (
+                  <div className="flex justify-between font-bold text-gray-900">
+                    <span>Tax Serial #:</span>
+                    <span className="font-mono">{sale.taxDocuments.find((d: ThermalReceiptTaxDoc) => d.documentType === "TAX_INVOICE")?.documentNumber}</span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span>Invoice #:</span>
+                  <span className="font-bold">{sale.invoiceNumber}</span>
+                </div>
+              </>
+            )}
             <div className="flex justify-between">
               <span>Date/Time:</span>
               <span>{formatDateTime(sale.createdAt || new Date())}</span>
             </div>
+            {sale.taxDocuments?.[0]?.supplyDate && (
+              <div className="flex justify-between">
+                <span>Date of Supply:</span>
+                <span>{new Date(sale.taxDocuments[0].supplyDate).toISOString().slice(0, 10)}</span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span>Receipt #:</span>
               <span>{sale.receiptNumber}</span>
             </div>
+            {sale.customer && (
+              <div className="pt-1 border-t border-dotted border-gray-300">
+                <div className="flex justify-between">
+                  <span>Customer:</span>
+                  <span className="font-medium">{sale.customer.name}</span>
+                </div>
+                {sale.customer.tin && (
+                  <div className="flex justify-between font-mono">
+                    <span>Customer TIN:</span>
+                    <span>{sale.customer.tin}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Line Items */}
@@ -126,7 +184,7 @@ export function ThermalReceiptModal({
             </div>
 
             <div className="divide-y divide-gray-100 pt-1">
-              {sale.items?.map((item: any, idx: number) => (
+              {sale.items?.map((item: ThermalReceiptItem, idx: number) => (
                 <div key={idx} className="py-1.5 space-y-0.5">
                   <div className="grid grid-cols-12">
                     <span className="col-span-6 font-semibold leading-tight">{item.name}</span>
@@ -168,7 +226,7 @@ export function ThermalReceiptModal({
 
             {Number(sale.taxAmount) > 0 && (
               <div className="flex justify-between">
-                <span>VAT (18%):</span>
+                <span>VAT / Tax:</span>
                 <span>+{formatCurrency(sale.taxAmount)}</span>
               </div>
             )}
@@ -238,6 +296,18 @@ export function ThermalReceiptModal({
               WhatsApp
             </button>
           </div>
+
+          {sale.taxDocuments && sale.taxDocuments.length > 0 && (
+            <a
+              href={`/print/tax-document/${sale.taxDocuments[0].id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/50 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100/70 transition-colors"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              View Official A4 Tax Invoice / PDF
+            </a>
+          )}
 
           <button
             type="button"

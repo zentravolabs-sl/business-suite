@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { requireTenant } from "@/lib/tenant";
 import { PosInterface } from "@/components/pos/pos-interface";
+import { PwaRegister } from "@/components/pos/pwa-register";
 
 export const metadata = {
   title: "POS Terminal | Zentravo BMS",
@@ -65,12 +66,17 @@ export default async function PosPage() {
   }));
 
   return (
-    <PosInterface
-      initialProducts={serializedProducts}
-      categories={serializedCategories}
-      branches={serializedBranches}
-      activeBranchId={tenant.branchId || branches[0]?.id || ""}
-      cashierName={user?.name || "Cashier"}
-    />
+    <>
+      <PwaRegister />
+      <PosInterface
+        initialProducts={serializedProducts}
+        categories={serializedCategories}
+        branches={serializedBranches}
+        activeBranchId={tenant.branchId || branches[0]?.id || ""}
+        cashierName={user?.name || "Cashier"}
+        businessId={tenant.businessId}
+        userId={tenant.userId}
+      />
+    </>
   );
 }

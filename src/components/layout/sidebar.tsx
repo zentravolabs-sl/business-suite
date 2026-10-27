@@ -19,6 +19,7 @@ import {
   Megaphone,
   BarChart3,
   Bot,
+  Sparkles,
   UserCog,
   GitBranch,
   Settings,
@@ -160,6 +161,13 @@ const navItems: NavItem[] = [
     icon: BarChart3,
   },
   {
+    title: "Business Advisor",
+    i18nKey: "nav.advisor",
+    href: "/dashboard/business-advisor",
+    icon: Sparkles,
+    badge: "AI",
+  },
+  {
     title: "AI Assistant",
     i18nKey: "nav.ai",
     href: "/dashboard/ai",
@@ -181,8 +189,11 @@ const navItems: NavItem[] = [
   {
     title: "Settings",
     i18nKey: "nav.settings",
-    href: "/dashboard/settings",
     icon: Settings,
+    children: [
+      { title: "General", href: "/dashboard/settings", icon: Settings },
+      { title: "Tax & Invoicing", href: "/dashboard/settings/tax", icon: Receipt },
+    ],
   },
   {
     title: "Subscription",

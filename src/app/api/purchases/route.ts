@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTenantContext } from "@/lib/tenant";
 import { prisma } from "@/lib/db";
 import { recordPurchaseJournalEntry } from "@/lib/accounting";
+import { issueInputDocument, type InputDocumentLine } from "@/lib/tax/document-service";
+import { allocateProportionally } from "@/lib/tax/adjustments";
+import { toErrorResponse } from "@/lib/tax/errors";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
@@ -20,6 +23,9 @@ const purchaseCreateSchema = z.object({
   supplierId: z.string().min(1, "Supplier is required"),
   purchaseOrderId: z.string().optional().nullable(),
   supplierInvoice: z.string().optional().nullable(),
+  supplierInvoiceDate: z.string().optional().nullable(),
+  pricesIncludeTax: z.boolean().optional().default(false),
+  inputVatEligibility: z.enum(["ELIGIBLE", "INELIGIBLE", "UNDER_REVIEW"]).optional().default("UNDER_REVIEW"),
   receivedDate: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
   discountAmount: z.coerce.number().min(0).default(0),
@@ -142,12 +148,17 @@ export async function POST(req: NextRequest) {
     const balance = Math.max(0, total - paidAmount);
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Generate GRN number
-      const count = await tx.purchase.count({
-        where: { businessId: tenant.businessId },
+      // 1. Generate concurrency-safe GRN number
+      const { allocateDocumentNumber } = await import("@/lib/tax/sequence-service");
+      const grnAlloc = await allocateDocumentNumber(tx, {
+        businessId: tenant.businessId,
+        documentType: "GRN",
+        prefix: "GRN",
+        issueDate: data.receivedDate ? new Date(data.receivedDate) : new Date(),
+        resetPeriod: "YEARLY",
+        minDigits: 5,
       });
-      const year = new Date().getFullYear();
-      const grnNumber = `GRN-${year}-${(count + 1).toString().padStart(5, "0")}`;
+      const grnNumber = grnAlloc.documentNumber;
 
       // 2. Create Purchase record with items
       const purchase = await tx.purchase.create({
@@ -158,6 +169,9 @@ export async function POST(req: NextRequest) {
           purchaseOrderId: data.purchaseOrderId || null,
           grnNumber,
           supplierInvoice: data.supplierInvoice || null,
+          supplierInvoiceDate: data.supplierInvoiceDate ? new Date(data.supplierInvoiceDate) : null,
+          pricesIncludeTax: data.pricesIncludeTax || false,
+          inputVatEligibility: data.inputVatEligibility as any,
           status: "RECEIVED",
           subtotal: new Prisma.Decimal(subtotal),
           discountAmount: new Prisma.Decimal(data.discountAmount),
@@ -349,20 +363,72 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Automated Accounting: Record Double-Entry Purchase Journal
-      try {
-        await recordPurchaseJournalEntry({
-          tx,
+      // Record INPUT TaxDocument if tax exists or input VAT is claimable
+      if (data.taxAmount > 0 || data.inputVatEligibility === "ELIGIBLE") {
+        const itemWeights = data.items.map((it) => it.quantity * it.unitCost);
+        const allocatedTaxes = allocateProportionally(itemWeights, data.taxAmount);
+
+        const inputLines: InputDocumentLine[] = data.items.map((it, idx) => {
+          const itemTax = allocatedTaxes[idx] || "0";
+          const rawTotal = it.quantity * it.unitCost;
+          const taxableValue = data.pricesIncludeTax
+            ? Math.max(0, rawTotal - Number(itemTax)).toFixed(2)
+            : rawTotal.toFixed(2);
+
+          const purchaseItem = purchase.items[idx];
+          return {
+            description: `Product #${it.productId}`,
+            quantity: it.quantity,
+            unitPrice: it.unitCost,
+            taxableValue,
+            taxAmount: itemTax,
+            treatment: Number(itemTax) > 0 ? "STANDARD_RATED" : "OUT_OF_SCOPE",
+            productId: it.productId,
+            purchaseItemId: purchaseItem?.id || null,
+          };
+        });
+
+        await issueInputDocument(tx, {
           businessId: tenant.businessId,
+          branchId: data.branchId,
+          documentType: supplier.vatNumber ? "TAX_INVOICE" : "COMMERCIAL_INVOICE",
+          documentNumber: grnNumber,
+          externalDocumentNo: data.supplierInvoice || null,
+          issueDate: data.supplierInvoiceDate ? new Date(data.supplierInvoiceDate) : new Date(),
+          supplyDate: data.receivedDate ? new Date(data.receivedDate) : new Date(),
+          supplier: {
+            id: supplier.id,
+            name: supplier.name,
+            tin: supplier.taxNumber || supplier.vatNumber || null,
+            vatNumber: supplier.vatNumber || null,
+            address: supplier.address || null,
+            phone: supplier.phone || null,
+          },
+          buyerName: tenant.businessName,
+          pricesIncludeTax: data.pricesIncludeTax || false,
+          inputVatEligibility: data.inputVatEligibility as any,
           purchaseId: purchase.id,
-          grnNumber,
-          totalAmount: total,
+          lines: inputLines,
+          discountTotal: data.discountAmount,
           paidAmount,
           paymentMethod: data.paymentMethod,
+          createdById: tenant.userId,
+          notes: `Purchase GRN: ${grnNumber}`,
         });
-      } catch (accErr) {
-        console.warn("Auto-journal entry error on purchase (non-fatal):", accErr);
       }
+
+      // Automated Accounting: Record Double-Entry Purchase Journal
+      await recordPurchaseJournalEntry({
+        tx,
+        businessId: tenant.businessId,
+        purchaseId: purchase.id,
+        grnNumber,
+        totalAmount: total,
+        taxAmount: data.taxAmount,
+        paidAmount,
+        paymentMethod: data.paymentMethod,
+        inputVatEligible: data.inputVatEligibility === "ELIGIBLE",
+      });
 
       return purchase;
     });
@@ -370,6 +436,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, purchase: result }, { status: 201 });
   } catch (error: any) {
     console.error("Purchases POST error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return toErrorResponse(error);
   }
 }

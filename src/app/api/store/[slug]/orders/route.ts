@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
+import { calculateTaxForSale } from "@/lib/tax/tax-context";
+import { allocateDocumentNumber } from "@/lib/tax/sequence-service";
+import { toErrorResponse } from "@/lib/tax/errors";
 
 const onlineOrderSchema = z.object({
   customerName: z.string().min(2, "Customer name is required"),
@@ -145,28 +148,39 @@ export async function POST(
       }
     }
 
-    const total = subtotal + deliveryFee;
+    const branchId =
+      validated.branchId ||
+      store.business.branches[0]?.id ||
+      null;
 
-    // Generate unique sequential order number: ORD-YYYY-XXXXX
-    const year = new Date().getFullYear();
-    const orderPrefix = `ORD-${year}-`;
-    const lastOrder = await prisma.onlineOrder.findFirst({
-      where: {
+    // Calculate tax using centralized tax engine
+    const taxCalculationItems = orderItemsData.map((it) => ({
+      productId: it.productId,
+      description: it.name,
+      quantity: it.quantity,
+      unitPrice: it.unitPrice,
+      pricesIncludeTax: false,
+      meta: { sku: it.sku },
+    }));
+
+    let finalSubtotal = subtotal;
+    let finalTaxAmount = 0;
+    let finalTotal = subtotal + deliveryFee;
+
+    try {
+      const { calculation } = await calculateTaxForSale({
         businessId: store.businessId,
-        orderNumber: { startsWith: orderPrefix },
-      },
-      orderBy: { orderNumber: "desc" },
-    });
-
-    let nextSeq = 1;
-    if (lastOrder && lastOrder.orderNumber.startsWith(orderPrefix)) {
-      const parts = lastOrder.orderNumber.split("-");
-      const currentSeq = parseInt(parts[parts.length - 1], 10);
-      if (!isNaN(currentSeq)) {
-        nextSeq = currentSeq + 1;
-      }
+        branchId: branchId || undefined,
+        items: taxCalculationItems,
+      });
+      finalSubtotal = Number(calculation.totals.netValue);
+      finalTaxAmount = Number(calculation.totals.taxTotal);
+      finalTotal = Number(calculation.totals.grandTotal) + deliveryFee;
+    } catch {
+      finalSubtotal = subtotal;
+      finalTaxAmount = 0;
+      finalTotal = subtotal + deliveryFee;
     }
-    const orderNumber = `${orderPrefix}${String(nextSeq).padStart(5, "0")}`;
 
     // Link or create CRM Customer
     let customer = await prisma.customer.findFirst({
@@ -189,13 +203,16 @@ export async function POST(
       });
     }
 
-    const branchId =
-      validated.branchId ||
-      store.business.branches[0]?.id ||
-      null;
-
-    // Create OnlineOrder with atomic transaction
+    // Create OnlineOrder with atomic transaction and concurrency-safe number
     const newOrder = await prisma.$transaction(async (tx) => {
+      const { documentNumber: orderNumber } = await allocateDocumentNumber(tx, {
+        businessId: store.businessId,
+        documentType: "ONLINE_ORDER",
+        prefix: "ORD",
+        resetPeriod: "YEARLY",
+        minDigits: 5,
+      });
+
       const order = await tx.onlineOrder.create({
         data: {
           businessId: store.businessId,
@@ -212,11 +229,11 @@ export async function POST(
           deliveryAddress: validated.deliveryAddress || null,
           deliveryCity: validated.deliveryCity || null,
           deliveryNotes: validated.deliveryNotes || null,
-          subtotal,
+          subtotal: finalSubtotal,
           deliveryFee,
           discountAmount: 0,
-          taxAmount: 0,
-          total,
+          taxAmount: finalTaxAmount,
+          total: finalTotal,
           paymentMethod: validated.paymentMethod,
           paymentStatus: "PENDING",
           items: {

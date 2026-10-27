@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTenantContext } from "@/lib/tenant";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
+import { toErrorResponse, TaxError } from "@/lib/tax/errors";
 
 const orderUpdateSchema = z.object({
   status: z
@@ -224,6 +225,12 @@ export async function PATCH(
 
         // 5. Cancelled -> Restock if stock was already decremented
         if (validated.status === "CANCELLED" && existingOrder.status !== "CANCELLED") {
+          if (existingOrder.status === "DELIVERED" || existingOrder.status === "COMPLETED") {
+            throw new TaxError(
+              "CANNOT_CANCEL_FINALIZED_ORDER",
+              "Delivered orders have finalized supply and tax status; please process an official return and credit note instead."
+            );
+          }
           updateData.cancelledAt = new Date();
 
           if (existingOrder.confirmedAt && targetBranchId) {
@@ -328,9 +335,6 @@ export async function PATCH(
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.issues[0]?.message || "Validation error" }, { status: 400 });
     }
-    return NextResponse.json(
-      { error: error?.message || "Failed to update order" },
-      { status: 500 }
-    );
+    return toErrorResponse(error);
   }
 }

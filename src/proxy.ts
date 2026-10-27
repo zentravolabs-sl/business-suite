@@ -9,7 +9,7 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 // Routes that require regular auth
-const protectedPrefixes = ["/dashboard", "/onboarding"];
+const protectedPrefixes = ["/dashboard", "/onboarding", "/print"];
 // Routes that require ADMIN cookie
 const adminProtectedPrefixes = ["/super-admin"];
 // Routes that are only for unauthenticated users
@@ -87,6 +87,6 @@ export const proxy = auth(async function proxy(req: NextRequest & { auth: unknow
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

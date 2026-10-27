@@ -23,7 +23,22 @@ export async function PATCH(
       warrantyEnabled,
       serviceEnabled,
       loyaltyEnabled,
+      taxInvoicingEnabled,
     } = body;
+
+    if (taxInvoicingEnabled === false) {
+      const existing = await prisma.business.findUnique({
+        where: { id },
+        include: { taxProfile: true },
+      });
+      const isVat = existing?.taxProfile?.vatStatus === "REGISTERED" || !!(existing?.vatNumber && existing.vatNumber.trim().length > 0);
+      if (isVat) {
+        return NextResponse.json(
+          { error: "Cannot disable mandatory tax & invoicing controls for a VAT-registered business under Sri Lanka Inland Revenue Department compliance regulations." },
+          { status: 409 }
+        );
+      }
+    }
 
     const data: Record<string, boolean> = {};
     if (typeof ordersEnabled === "boolean") data.ordersEnabled = ordersEnabled;
@@ -31,6 +46,7 @@ export async function PATCH(
     if (typeof warrantyEnabled === "boolean") data.warrantyEnabled = warrantyEnabled;
     if (typeof serviceEnabled === "boolean") data.serviceEnabled = serviceEnabled;
     if (typeof loyaltyEnabled === "boolean") data.loyaltyEnabled = loyaltyEnabled;
+    if (typeof taxInvoicingEnabled === "boolean") data.taxInvoicingEnabled = taxInvoicingEnabled;
 
     const business = await prisma.business.update({
       where: { id },
@@ -43,6 +59,7 @@ export async function PATCH(
         warrantyEnabled: true,
         serviceEnabled: true,
         loyaltyEnabled: true,
+        taxInvoicingEnabled: true,
       },
     });
 
@@ -76,6 +93,7 @@ export async function GET(
         warrantyEnabled: true,
         serviceEnabled: true,
         loyaltyEnabled: true,
+        taxInvoicingEnabled: true,
       },
     });
 

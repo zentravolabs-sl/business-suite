@@ -411,7 +411,29 @@ export function SettingsClient({ business }: SettingsClientProps) {
         {/* Tax Tab */}
         {activeTab === "tax" && (
           <div className="space-y-5">
-            <h3 className="font-semibold text-base border-b pb-3">Tax Configuration</h3>
+            <div className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-purple-50/60 p-5 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-100/80 px-2.5 py-0.5 text-xs font-semibold text-indigo-800">
+                    Sri Lanka Tax & Invoicing Engine
+                  </span>
+                  <h3 className="text-base font-bold text-neutral-900 mt-2">
+                    Professional Tax Profile, Multi-rate & IRD Compliance
+                  </h3>
+                  <p className="text-xs text-neutral-600 mt-1 max-w-xl">
+                    Manage your 9-digit TIN, VAT registration, effective-dated rates, product tax categories, concurrency-safe invoice serials (YYMMM_QQQQ_XXXXX), A4 tax invoice templates, and real-time tax reports.
+                  </p>
+                </div>
+                <a
+                  href="/dashboard/settings/tax"
+                  className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow hover:from-violet-700 hover:to-indigo-700 transition"
+                >
+                  Open Tax & Invoicing Suite →
+                </a>
+              </div>
+            </div>
+
+            <h3 className="font-semibold text-base border-b pb-3 pt-2">Quick Tax Configuration</h3>
             <ToggleSwitch
               value={form.taxEnabled}
               onChange={toggle("taxEnabled")}
@@ -424,7 +446,7 @@ export function SettingsClient({ business }: SettingsClientProps) {
                   <Input value={form.taxName} onChange={set("taxName")} placeholder="e.g. VAT" />
                 </FormField>
                 <FormField label="Tax Rate (%)">
-                  <Input type="number" value={form.taxRate} onChange={set("taxRate")} placeholder="e.g. 15" />
+                  <Input type="number" value={form.taxRate} onChange={set("taxRate")} placeholder="e.g. 18" />
                 </FormField>
                 <div className="flex flex-col justify-end">
                   <ToggleSwitch
@@ -436,12 +458,6 @@ export function SettingsClient({ business }: SettingsClientProps) {
                 </div>
               </div>
             )}
-
-            <div className="mt-4 rounded-xl bg-muted/50 p-4 text-sm text-muted-foreground">
-              <p className="font-medium text-foreground mb-1">ℹ️ Sri Lankan VAT Note</p>
-              <p>Standard VAT rate in Sri Lanka is 18%. Set your tax rate accordingly.</p>
-              <p className="mt-1">Tax settings apply to all POS sales and online orders.</p>
-            </div>
           </div>
         )}
 

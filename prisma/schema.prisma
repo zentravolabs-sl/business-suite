@@ -249,6 +249,8 @@ enum NotificationType {
   CAMPAIGN
   WARRANTY_CLAIM
   SHIFT_REMINDER
+  ADVISOR_REPORT
+  ADVISOR_INSIGHT
 }
 
 enum NotificationStatus {
@@ -296,6 +298,78 @@ enum AuditAction {
   ROLE_CHANGE
   EXPORT
   IMPORT
+}
+
+// =============================================================================
+// TAX & INVOICING (Sri Lanka) — enums
+// =============================================================================
+
+enum TaxTreatment {
+  STANDARD_RATED
+  ZERO_RATED
+  EXEMPT
+  OUT_OF_SCOPE
+}
+
+enum TaxPricingMode {
+  TAX_INCLUSIVE
+  TAX_EXCLUSIVE
+}
+
+enum VatRegistrationStatus {
+  NOT_REGISTERED
+  PENDING_REGISTRATION
+  REGISTERED
+}
+
+enum TaxDocumentType {
+  TAX_INVOICE
+  COMMERCIAL_INVOICE
+  SALES_INVOICE
+  RECEIPT
+  QUOTATION
+  PROFORMA_INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
+}
+
+enum TaxDocumentStatus {
+  DRAFT
+  FINALIZED
+  CANCELLED
+}
+
+enum TaxDirection {
+  OUTPUT // issued by the business (sales)
+  INPUT // received by the business (purchases / expenses)
+}
+
+enum TaxRoundingLevel {
+  LINE
+  INVOICE
+}
+
+enum SequenceResetPeriod {
+  NEVER
+  YEARLY
+  MONTHLY
+}
+
+enum InputVatEligibility {
+  ELIGIBLE
+  INELIGIBLE
+  UNDER_REVIEW
+}
+
+enum IrdSubmissionStatus {
+  NOT_APPLICABLE
+  PENDING
+  VALIDATION_FAILED
+  READY
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+  FAILED
 }
 
 enum OtpPurpose {
@@ -542,6 +616,8 @@ model Business {
   taxRate              Decimal?        @db.Decimal(5, 2)
   taxName              String?         @default("VAT")
   taxInclusive         Boolean         @default(false)
+  // Mandatory tax controls cannot be switched off for VAT-registered businesses (enforced in code).
+  taxInvoicingEnabled  Boolean         @default(true)
   invoiceFooter        String?
   receiptHeader        String?
   receiptFooter        String?
@@ -556,6 +632,7 @@ model Business {
   ecommerceEnabled     Boolean         @default(false)
   ordersEnabled        Boolean         @default(true)
   serviceEnabled       Boolean         @default(true)
+  allowNegativeStock   Boolean         @default(false)
   onboardingCompleted  Boolean         @default(false)
   onboardingStep       Int             @default(0)
   createdAt            DateTime        @default(now())
@@ -591,6 +668,15 @@ model Business {
   subscription         Subscription?
   supportTickets       SupportTicket[]
   taxRates             TaxRate[]
+  taxProfile           BusinessTaxProfile?
+  taxRateVersions      TaxRateVersion[]
+  taxCategories        TaxCategory[]
+  taxDocuments         TaxDocument[]
+  documentSequences    DocumentSequence[]
+  numberingRules       NumberingRule[]
+  taxAccountMappings   TaxAccountMapping[]
+  taxIntegration       TaxIntegrationSetting?
+  irdSubmissions       IrdSubmission[]
   paymentTransactions  PaymentTransaction[]
 
   @@index([slug])
@@ -604,6 +690,8 @@ model Branch {
   business      Business  @relation(fields: [businessId], references: [id])
   name          String
   code          String?
+  // Optional override of the profile's tax-invoice classification code (QQQQ in YYMMM_QQQQ_XXXXX)
+  taxClassificationCode String?
   address       String?
   city          String?
   phone         String?
@@ -626,6 +714,7 @@ model Branch {
   transfersFrom BranchTransfer[] @relation("TransferFrom")
   transfersTo   BranchTransfer[] @relation("TransferTo")
   onlineOrders  OnlineOrder[]
+  taxDocuments  TaxDocument[]
 
   @@unique([businessId, code])
   @@index([businessId])
@@ -878,16 +967,69 @@ model TaxRate {
   businessId  String
   business    Business @relation(fields: [businessId], references: [id])
   name        String
+  // Legacy single rate. Effective-dated percentages live in TaxRateVersion; this column
+  // mirrors the version current at last save for backwards compatibility.
   rate        Decimal  @db.Decimal(5, 2)
+  code        String?
+  treatment   TaxTreatment @default(STANDARD_RATED)
+  description String?
+  legalReference String?
   isDefault   Boolean  @default(false)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   products    Product[]
+  versions    TaxRateVersion[]
+  categories  TaxCategory[]
 
   @@index([businessId])
   @@map("tax_rates")
+}
+
+// Effective-dated percentage for a TaxRate. Finalized documents copy the percentage
+// (and this id) onto each line so historical figures never change.
+model TaxRateVersion {
+  id            String    @id @default(cuid())
+  businessId    String
+  business      Business  @relation(fields: [businessId], references: [id])
+  taxRateId     String
+  taxRate       TaxRate   @relation(fields: [taxRateId], references: [id], onDelete: Cascade)
+  ratePercent   Decimal   @db.Decimal(7, 4)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  note          String?
+  isActive      Boolean   @default(true)
+  createdById   String?
+  createdAt     DateTime  @default(now())
+
+  @@index([businessId])
+  @@index([taxRateId, effectiveFrom])
+  @@map("tax_rate_versions")
+}
+
+// Product tax category: maps products to a supply treatment (+ rate for standard-rated).
+model TaxCategory {
+  id          String       @id @default(cuid())
+  businessId  String
+  business    Business     @relation(fields: [businessId], references: [id])
+  name        String
+  code        String
+  treatment   TaxTreatment @default(STANDARD_RATED)
+  taxRateId   String?
+  taxRate     TaxRate?     @relation(fields: [taxRateId], references: [id])
+  description String?
+  legalReference String?
+  isDefault   Boolean      @default(false)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  products    Product[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+  @@map("tax_categories")
 }
 
 model Product {
@@ -902,6 +1044,8 @@ model Product {
   unit             Unit?     @relation(fields: [unitId], references: [id])
   taxRateId        String?
   taxRate          TaxRate?  @relation(fields: [taxRateId], references: [id])
+  taxCategoryId    String?
+  taxCategory      TaxCategory? @relation(fields: [taxCategoryId], references: [id])
   supplierId       String?
   supplier         Supplier? @relation(fields: [supplierId], references: [id])
   name             String
@@ -1178,6 +1322,14 @@ model Customer {
   phone         String?
   email         String?
   address       String?
+  companyName   String?
+  tin           String?
+  vatRegistrationNumber String?
+  isVatRegistered Boolean @default(false)
+  taxExemptionTreatment TaxTreatment?
+  exemptionCertificate  String?
+  exemptionValidUntil   DateTime?
+  exemptionReason       String?
   city          String?
   district      String?
   dateOfBirth   DateTime?
@@ -1202,6 +1354,7 @@ model Customer {
   onlineOrders      OnlineOrder[]
   campaignRecipients CampaignRecipient[]
   notifications     Notification[]
+  taxDocuments      TaxDocument[]
 
   @@unique([businessId, phone])
   @@index([businessId])
@@ -1324,6 +1477,7 @@ model Supplier {
   purchaseOrders  PurchaseOrder[]
   purchases       Purchase[]
   payables        SupplierPayable[]
+  taxDocuments    TaxDocument[]
 
   @@unique([businessId, phone])
   @@index([businessId])
@@ -1447,6 +1601,10 @@ model Sale {
   notes           String?
   isSynced        Boolean     @default(true)  // For offline POS sync
   offlineId       String?     // Idempotency key for offline sync
+  offlineCreatedAt DateTime?  // Timestamp recorded on POS device during offline checkout
+  syncedAt        DateTime?   // Timestamp when synced and committed to server
+  deviceId        String?     // Unique POS terminal/device identifier
+  syncConflicts   Json?       // Audit trail of price or stock conflicts resolved
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -1459,9 +1617,11 @@ model Sale {
   creditTxns      CreditTransaction[]
   journalEntries  JournalEntry[]
   onlineOrder     OnlineOrder?
+  taxDocuments    TaxDocument[]
 
   @@unique([businessId, invoiceNumber])
   @@index([businessId])
+  @@index([businessId, offlineId])
   @@index([branchId])
   @@index([customerId])
   @@index([invoiceNumber])
@@ -1526,11 +1686,14 @@ model Refund {
   reason        String
   notes         String?
   totalAmount   Decimal     @db.Decimal(12, 2)
+  subtotal      Decimal     @db.Decimal(12, 2) @default(0) // value excluding tax
+  taxAmount     Decimal     @db.Decimal(12, 2) @default(0)
   paymentMethod PaymentMethod @default(CASH)
   userId        String?
   createdAt     DateTime    @default(now())
 
   items         RefundItem[]
+  taxDocuments  TaxDocument[]
 
   @@index([businessId])
   @@index([saleId])
@@ -1674,6 +1837,9 @@ model Purchase {
   purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
   grnNumber       String         // Goods Received Note
   supplierInvoice String?
+  supplierInvoiceDate DateTime?
+  pricesIncludeTax Boolean        @default(false)
+  inputVatEligibility InputVatEligibility?
   status          PurchaseStatus @default(RECEIVED)
   subtotal        Decimal        @db.Decimal(12, 2)
   discountAmount  Decimal        @db.Decimal(12, 2) @default(0)
@@ -1691,6 +1857,7 @@ model Purchase {
   payments        PurchasePayment[]
   payables        SupplierPayable[]
   journalEntries  JournalEntry[]
+  taxDocuments    TaxDocument[]
 
   @@unique([businessId, grnNumber])
   @@index([businessId])
@@ -1768,7 +1935,14 @@ model Expense {
   userId      String?
   user        User?           @relation(fields: [userId], references: [id])
   description String
-  amount      Decimal         @db.Decimal(12, 2)
+  amount      Decimal         @db.Decimal(12, 2) // amount paid (tax inclusive)
+  taxableAmount Decimal?      @db.Decimal(12, 2)
+  taxAmount   Decimal         @db.Decimal(12, 2) @default(0)
+  taxRatePercent Decimal?     @db.Decimal(7, 4)
+  inputVatEligibility InputVatEligibility?
+  vendorName  String?
+  vendorTin   String?
+  vendorInvoiceNo String?
   method      PaymentMethod   @default(CASH)
   reference   String?
   receipt     String?         // Uploaded receipt URL
@@ -1781,6 +1955,7 @@ model Expense {
   updatedAt   DateTime        @updatedAt
 
   journalEntries JournalEntry[]
+  taxDocuments   TaxDocument[]
 
   @@index([businessId])
   @@index([branchId])
@@ -2148,6 +2323,7 @@ model OnlineOrder {
 
   items           OnlineOrderItem[]
   delivery        Delivery?
+  taxDocuments    TaxDocument[]
   paymentTxns     PaymentTransaction[]
 
   @@unique([businessId, orderNumber])
@@ -2322,3 +2498,507 @@ model NotificationPreference {
 
   @@map("notification_preferences")
 }
+
+// =============================================================================
+// TAX & INVOICING (Sri Lanka)
+// =============================================================================
+
+// Per-business tax identity & invoicing preferences (1:1 with Business).
+model BusinessTaxProfile {
+  id                       String                @id @default(cuid())
+  businessId               String                @unique
+  business                 Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  legalName                String?
+  registeredAddress        String?
+  registeredPhone          String?
+  tin                      String?               // 9-digit Taxpayer Identification Number
+  vatStatus                VatRegistrationStatus @default(NOT_REGISTERED)
+  vatRegistrationNumber    String?
+  vatRegistrationDetails   String?
+  registrationEffectiveDate DateTime?
+  classificationCode       String                @default("MAIN") // QQQQ in YYMMM_QQQQ_XXXXX
+  defaultCurrency          String                @default("LKR")
+
+  pricingMode              TaxPricingMode        @default(TAX_INCLUSIVE)
+  roundingLevel            TaxRoundingLevel      @default(LINE)
+  roundingMode             String                @default("HALF_UP")
+  defaultTaxCategoryId     String?
+  defaultTreatment         TaxTreatment          @default(STANDARD_RATED)
+
+  // Document & numbering preferences
+  defaultNonTaxDocument    TaxDocumentType       @default(SALES_INVOICE)
+  showAmountInWords        Boolean               @default(true)
+  showPaymentMethod        Boolean               @default(true)
+  showLogo                 Boolean               @default(true)
+  showUnitOfMeasure        Boolean               @default(true)
+  invoiceNotes             String?
+  paymentTerms             String?
+  receiptFooter            String?
+  autoPrintReceipt         Boolean               @default(false)
+  templateConfig           Json?                 // per-template overrides (header/footer text, toggles)
+  serialResetPeriod        SequenceResetPeriod   @default(NEVER)
+  serialMinDigits          Int                   @default(5)
+
+  inputVatDefaultEligibility InputVatEligibility @default(UNDER_REVIEW)
+
+  updatedById              String?
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+
+  @@map("business_tax_profiles")
+}
+
+// A legally issued (or draft) document. Finalized FISCAL documents are immutable:
+// a database trigger (prisma/sql/tax_immutability.sql) rejects UPDATE/DELETE.
+model TaxDocument {
+  id                 String            @id @default(cuid())
+  businessId         String
+  business           Business          @relation(fields: [businessId], references: [id])
+  branchId           String?
+  branch             Branch?           @relation(fields: [branchId], references: [id])
+  direction          TaxDirection      @default(OUTPUT)
+  documentType       TaxDocumentType
+  status             TaxDocumentStatus @default(FINALIZED)
+  documentNumber     String
+  sequenceKey        String?
+  sequenceNumber     Int?
+  classificationCode String?
+
+  issueDate          DateTime
+  supplyDate         DateTime
+  dueDate            DateTime?
+
+  // Snapshots — never join back to live profile/customer data when rendering.
+  sellerName         String
+  sellerTin          String?
+  sellerVatNumber    String?
+  sellerAddress      String?
+  sellerPhone        String?
+  sellerVatStatus    VatRegistrationStatus @default(NOT_REGISTERED)
+  buyerName          String?
+  buyerTin           String?
+  buyerVatNumber     String?
+  buyerAddress       String?
+  buyerPhone         String?
+  customerId         String?
+  customer           Customer?         @relation(fields: [customerId], references: [id])
+  supplierId         String?
+  supplier           Supplier?         @relation(fields: [supplierId], references: [id])
+
+  currency           String            @default("LKR")
+  pricingMode        TaxPricingMode
+  roundingLevel      TaxRoundingLevel  @default(LINE)
+
+  grossTotal         Decimal           @db.Decimal(14, 2)
+  discountTotal      Decimal           @db.Decimal(14, 2) @default(0)
+  netValue           Decimal           @db.Decimal(14, 2)
+  standardRatedValue Decimal           @db.Decimal(14, 2) @default(0)
+  zeroRatedValue     Decimal           @db.Decimal(14, 2) @default(0)
+  exemptValue        Decimal           @db.Decimal(14, 2) @default(0)
+  outOfScopeValue    Decimal           @db.Decimal(14, 2) @default(0)
+  taxTotal           Decimal           @db.Decimal(14, 2) @default(0)
+  grandTotal         Decimal           @db.Decimal(14, 2)
+  breakdown          Json?
+  amountInWords      String?
+
+  paymentMethod      String?
+  paidAmount         Decimal           @db.Decimal(14, 2) @default(0)
+  balanceDue         Decimal           @db.Decimal(14, 2) @default(0)
+  notes              String?
+  notices            Json?
+  templateKey        String
+  complianceVersion  String?
+
+  parentDocumentId   String?
+  parentDocument     TaxDocument?      @relation("DocumentAdjustments", fields: [parentDocumentId], references: [id])
+  adjustments        TaxDocument[]     @relation("DocumentAdjustments")
+  adjustmentReason   String?
+
+  saleId             String?
+  sale               Sale?             @relation(fields: [saleId], references: [id])
+  purchaseId         String?
+  purchase           Purchase?         @relation(fields: [purchaseId], references: [id])
+  refundId           String?
+  refund             Refund?           @relation(fields: [refundId], references: [id])
+  onlineOrderId      String?
+  onlineOrder        OnlineOrder?      @relation(fields: [onlineOrderId], references: [id])
+  expenseId          String?
+  expense            Expense?          @relation(fields: [expenseId], references: [id])
+
+  // Input-VAT review (INPUT documents)
+  externalDocumentNo String?
+  inputVatEligibility InputVatEligibility?
+  inputVatReviewedById String?
+  inputVatReviewedAt DateTime?
+  inputVatReviewNote String?
+
+  // Future IRD e-invoicing layer — no submission is performed by this release.
+  irdStatus          IrdSubmissionStatus @default(NOT_APPLICABLE)
+  externalReference  String?
+
+  contentHash        String?
+  createdById        String?
+  finalizedAt        DateTime?
+  createdAt          DateTime          @default(now())
+
+  lines              TaxDocumentLine[]
+  irdSubmissions     IrdSubmission[]
+
+  @@unique([businessId, direction, documentNumber])
+  @@index([businessId, issueDate])
+  @@index([businessId, documentType])
+  @@index([businessId, direction, supplyDate])
+  @@index([saleId])
+  @@index([purchaseId])
+  @@index([refundId])
+  @@index([onlineOrderId])
+  @@index([expenseId])
+  @@index([parentDocumentId])
+  @@index([branchId])
+  @@map("tax_documents")
+}
+
+model TaxDocumentLine {
+  id                String        @id @default(cuid())
+  documentId        String
+  document          TaxDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  lineNo            Int
+  productId         String?
+  variantId         String?
+  saleItemId        String?
+  purchaseItemId    String?
+  parentLineId      String?       // original line for credit / debit notes
+  description       String
+  sku               String?
+  unit              String?
+  quantity          Decimal       @db.Decimal(14, 4)
+  unitPrice         Decimal       @db.Decimal(14, 4)
+  priceIncludesTax  Boolean       @default(false)
+  grossAmount       Decimal       @db.Decimal(14, 2)
+  discountAmount    Decimal       @db.Decimal(14, 2) @default(0)
+  taxableValue      Decimal       @db.Decimal(14, 2)
+  taxAmount         Decimal       @db.Decimal(14, 2) @default(0)
+  lineTotal         Decimal       @db.Decimal(14, 2)
+  treatment         TaxTreatment
+  ratePercent       Decimal       @db.Decimal(7, 4) @default(0) // historical rate at issue time
+  taxRateId         String?
+  taxRateVersionId  String?
+  taxCategoryId     String?
+  taxCategoryName   String?
+  exemptionReason   String?
+  meta              Json?
+
+  @@index([documentId])
+  @@index([saleItemId])
+  @@index([productId])
+  @@map("tax_document_lines")
+}
+
+// Concurrency-safe counters. Allocation = atomic INSERT … ON CONFLICT DO UPDATE … RETURNING.
+model DocumentSequence {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id])
+  sequenceKey String   // e.g. TAX_INVOICE:MAIN, CREDIT_NOTE, JOURNAL
+  periodKey   String   @default("ALL")
+  lastNumber  Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([businessId, sequenceKey, periodKey])
+  @@index([businessId])
+  @@map("document_sequences")
+}
+
+// Prefix / padding / reset policy for non-fiscal and adjustment documents.
+model NumberingRule {
+  id           String              @id @default(cuid())
+  businessId   String
+  business     Business            @relation(fields: [businessId], references: [id])
+  documentType TaxDocumentType
+  prefix       String
+  minDigits    Int                 @default(6)
+  resetPeriod  SequenceResetPeriod @default(NEVER)
+  isActive     Boolean             @default(true)
+  updatedById  String?
+  updatedAt    DateTime            @updatedAt
+  createdAt    DateTime            @default(now())
+
+  @@unique([businessId, documentType])
+  @@map("numbering_rules")
+}
+
+// Configurable general-ledger accounts used by tax-aware posting.
+// key ∈ OUTPUT_VAT | INPUT_VAT | SALES_REVENUE | SERVICE_REVENUE | COGS | INVENTORY |
+//       ACCOUNTS_RECEIVABLE | ACCOUNTS_PAYABLE | ROUNDING | SALES_RETURNS
+model TaxAccountMapping {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+  key        String
+  accountId  String
+  updatedById String?
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@unique([businessId, key])
+  @@map("tax_account_mappings")
+}
+
+// Future IRD / RAMIS e-invoicing connection. No endpoint is assumed: the URL and
+// credentials are supplied by the business once IRD publishes the specification.
+model TaxIntegrationSetting {
+  id                 String   @id @default(cuid())
+  businessId         String   @unique
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  provider           String   @default("IRD_RAMIS")
+  enabled            Boolean  @default(false)
+  environment        String   @default("SANDBOX") // SANDBOX | PRODUCTION
+  endpointUrl        String?
+  clientIdEnc        String?  // AES-256-GCM  iv:tag:ciphertext (base64)
+  clientSecretEnc    String?
+  credentialsUpdatedAt DateTime?
+  autoSubmit         Boolean  @default(false)
+  maxRetries         Int      @default(5)
+  lastValidatedAt    DateTime?
+  lastError          String?
+  updatedById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("tax_integration_settings")
+}
+
+// Outbound e-invoice queue entry. Created for finalized fiscal documents when the
+// integration is enabled; status transitions are recorded, never fabricated.
+model IrdSubmission {
+  id               String              @id @default(cuid())
+  businessId       String
+  business         Business            @relation(fields: [businessId], references: [id])
+  documentId       String
+  document         TaxDocument         @relation(fields: [documentId], references: [id])
+  status           IrdSubmissionStatus @default(PENDING)
+  attempts         Int                 @default(0)
+  lastAttemptAt    DateTime?
+  nextRetryAt      DateTime?
+  validationErrors Json?
+  lastError        String?
+  externalReference String?
+  payloadHash      String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([businessId, status])
+  @@index([documentId])
+  @@map("ird_submissions")
+}
+
+// =============================================================================
+// AI BUSINESS & FINANCIAL ADVISOR
+// Advisor tables store *derived* artefacts only (preferences, generated reports,
+// insights, recommendations, goals, job history, chat). Source-of-truth financial
+// data always stays in Sale / Expense / Purchase / Account etc.
+// =============================================================================
+
+enum AdvisorRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum AdvisorActionStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  DISMISSED
+}
+
+enum AdvisorInsightStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+// Per-business advisor configuration (1:1 with Business).
+model AdvisorPreference {
+  id                   String   @id @default(cuid())
+  businessId           String   @unique
+  enabled              Boolean  @default(true)
+  dailyReportEnabled   Boolean  @default(true)
+  reportFrequency      String   @default("DAILY") // DAILY | WEEKDAYS | WEEKLY
+  weeklyDay            Int      @default(0) // 0 = Sunday … 6 = Saturday (WEEKLY only)
+  deliveryTime         String   @default("18:00") // HH:mm in the effective timezone
+  timezone             String? // null → Business.timezone
+  channels             String[] @default(["IN_APP"]) // IN_APP | EMAIL | SMS | WHATSAPP
+  emailRecipients      String[] @default([])
+  smsRecipients        String[] @default([])
+  whatsappRecipients   String[] @default([])
+  aiExplanationsEnabled Boolean @default(false) // allow sending aggregated figures to the configured AI provider
+  chatRetentionDays    Int      @default(90)
+  thresholds           Json? // overrides for rule thresholds (see lib/advisor/config.ts)
+  disabledRules        String[] @default([])
+  updatedById          String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("advisor_preferences")
+}
+
+// Idempotency lock + execution history for scheduled report generation.
+// One row per (business, local report date, kind) — the unique key prevents duplicates.
+model AdvisorReportRun {
+  id            String           @id @default(cuid())
+  businessId    String
+  reportDate    String // YYYY-MM-DD in the business timezone
+  kind          String           @default("DAILY")
+  status        AdvisorRunStatus @default(PENDING)
+  trigger       String           @default("SCHEDULER") // SCHEDULER | MANUAL
+  attempts      Int              @default(0)
+  maxAttempts   Int              @default(3)
+  lockedAt      DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  nextRetryAt   DateTime?
+  lastError     String?
+  attemptLog    Json? // [{ at, ok, error?, durationMs }]
+  reportId      String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([businessId, reportDate, kind])
+  @@index([status, nextRetryAt])
+  @@index([businessId, createdAt])
+  @@map("advisor_report_runs")
+}
+
+// Generated end-of-day (or weekly) report. `data` is a snapshot of verified metrics
+// as of generation time so historic reports remain reproducible.
+model AdvisorDailyReport {
+  id            String   @id @default(cuid())
+  businessId    String
+  reportDate    String // YYYY-MM-DD in the business timezone
+  kind          String   @default("DAILY")
+  periodStart   DateTime
+  periodEnd     DateTime
+  timezone      String
+  currency      String
+  language      String   @default("en")
+  dataStatus    String   @default("COMPLETE") // COMPLETE | ESTIMATED | INCOMPLETE | UNAVAILABLE | NO_ACTIVITY
+  data          Json // metrics snapshot (see lib/advisor/types.ts DailyReportData)
+  aiNarrative   String?
+  deliveries    Json? // [{ channel, status, at, error? }]
+  generatedBy   String   @default("SCHEDULER")
+  generatedAt   DateTime @default(now())
+
+  @@unique([businessId, reportDate, kind])
+  @@index([businessId, generatedAt])
+  @@map("advisor_daily_reports")
+}
+
+// Rule-engine finding. Re-detected findings upsert on `fingerprint` so they never duplicate.
+model AdvisorInsight {
+  id              String               @id @default(cuid())
+  businessId      String
+  ruleKey         String
+  fingerprint     String
+  category        String // FINANCE | SALES | INVENTORY | CUSTOMERS | DATA_QUALITY | OPERATIONS
+  severity        String // INFO | LOW | MEDIUM | HIGH | CRITICAL
+  params          Json // numbers/names used to render localized text
+  evidence        Json? // supporting metrics
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  impact          Json? // { low, high, label: "ESTIMATE" }
+  confidence      String               @default("MEDIUM") // HIGH | MEDIUM | LOW
+  missingData     String[]             @default([])
+  aiExplanation   String?
+  status          AdvisorInsightStatus @default(OPEN)
+  firstDetectedAt DateTime             @default(now())
+  lastDetectedAt  DateTime             @default(now())
+  resolvedAt      DateTime?
+
+  @@unique([businessId, fingerprint])
+  @@index([businessId, status, severity])
+  @@index([businessId, category])
+  @@map("advisor_insights")
+}
+
+// Actionable recommendation derived from an insight; owners track status over time.
+model AdvisorRecommendation {
+  id             String              @id @default(cuid())
+  businessId     String
+  insightId      String?
+  ruleKey        String
+  fingerprint    String
+  priority       Int                 @default(2) // 1 = high, 2 = medium, 3 = low
+  params         Json
+  evidence       Json?
+  actionUrl      String?
+  status         AdvisorActionStatus @default(PENDING)
+  metricKey      String? // metric used to review the outcome
+  baselineValue  Decimal?            @db.Decimal(16, 4)
+  baselineAt     DateTime?
+  isActive       Boolean             @default(true) // false once the underlying condition cleared
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  statusChangedAt DateTime?
+
+  history        AdvisorActionHistory[]
+
+  @@unique([businessId, fingerprint])
+  @@index([businessId, status, priority])
+  @@map("advisor_recommendations")
+}
+
+model AdvisorActionHistory {
+  id               String                @id @default(cuid())
+  businessId       String
+  recommendationId String
+  recommendation   AdvisorRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  fromStatus       AdvisorActionStatus?
+  toStatus         AdvisorActionStatus
+  note             String?
+  userId           String?
+  metricKey        String?
+  metricValue      Decimal?              @db.Decimal(16, 4)
+  createdAt        DateTime              @default(now())
+
+  @@index([recommendationId])
+  @@index([businessId, createdAt])
+  @@map("advisor_action_history")
+}
+
+model AdvisorGoal {
+  id            String   @id @default(cuid())
+  businessId    String
+  metric        String // DAILY_SALES | MONTHLY_SALES | MONTHLY_GROSS_PROFIT | MONTHLY_EXPENSE_LIMIT | MONTHLY_COLLECTIONS | STOCK_TURNOVER | REPEAT_CUSTOMER_SALES
+  title         String?
+  targetValue   Decimal  @db.Decimal(16, 2)
+  isActive      Boolean  @default(true)
+  startsOn      DateTime @default(now())
+  endsOn        DateTime?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([businessId, isActive])
+  @@map("advisor_goals")
+}
+
+// Advisor chat transcript. Purged after AdvisorPreference.chatRetentionDays.
+model AdvisorChatMessage {
+  id         String   @id @default(cuid())
+  businessId String
+  userId     String
+  role       String // USER | ADVISOR
+  content    String
+  intent     String?
+  usedAi     Boolean  @default(false)
+  data       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([businessId, userId, createdAt])
+  @@map("advisor_chat_messages")
+}
+

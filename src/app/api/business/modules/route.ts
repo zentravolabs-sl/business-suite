@@ -19,6 +19,7 @@ export async function GET() {
         warrantyEnabled: true,
         serviceEnabled: true,
         loyaltyEnabled: true,
+        taxInvoicingEnabled: true,
       },
     });
 

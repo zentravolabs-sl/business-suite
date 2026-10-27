@@ -4,11 +4,21 @@ import { PrismaClient } from "@prisma/client";
 // We use @prisma/adapter-neon for Vercel Edge / serverless (Next.js route handlers)
 // and @prisma/adapter-pg for Node.js environments (seed, tests).
 
+function normalizeConnectionString(url: string): string {
+  // Silence pg-connection-string v3 security warning by explicitly using verify-full for remote databases
+  if (url.includes("sslmode=require") && !url.includes("uselibpqcompat")) {
+    return url.replace(/sslmode=require(&|$)/, "sslmode=verify-full$1");
+  }
+  return url;
+}
+
 function createPrismaClient(): PrismaClient {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  const rawConnectionString = process.env.DATABASE_URL;
+  if (!rawConnectionString) {
     throw new Error("DATABASE_URL environment variable is not set");
   }
+
+  const connectionString = normalizeConnectionString(rawConnectionString);
 
   // Determine environment - use pg adapter for Node.js, neon for edge
   const isEdge =

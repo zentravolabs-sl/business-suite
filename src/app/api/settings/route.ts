@@ -132,6 +132,19 @@ export async function PATCH(req: NextRequest) {
 
     const data = parsed.data;
 
+    // Tax compliance guard: Cannot disable tax if VAT registered
+    if (data.taxEnabled === false) {
+      const profile = await prisma.businessTaxProfile.findUnique({
+        where: { businessId: tenant.businessId },
+      });
+      if (profile?.vatStatus === "REGISTERED") {
+        return NextResponse.json(
+          { error: "Cannot disable tax for a VAT-registered business under Sri Lanka tax regulations." },
+          { status: 400 }
+        );
+      }
+    }
+
     const business = await prisma.business.update({
       where: { id: tenant.businessId },
       data: {
@@ -140,6 +153,28 @@ export async function PATCH(req: NextRequest) {
         loyaltyPointsPerLkr: data.loyaltyPointsPerLkr !== undefined ? data.loyaltyPointsPerLkr : undefined,
       },
     });
+
+    // Sync to BusinessTaxProfile if legalName, taxNumber, or vatNumber changed
+    if (data.legalName !== undefined || data.taxNumber !== undefined || data.vatNumber !== undefined || data.taxInclusive !== undefined) {
+      await prisma.businessTaxProfile.upsert({
+        where: { businessId: tenant.businessId },
+        update: {
+          ...(data.legalName !== undefined ? { legalName: data.legalName } : {}),
+          ...(data.taxNumber !== undefined ? { tin: data.taxNumber } : {}),
+          ...(data.vatNumber !== undefined ? { vatRegistrationNumber: data.vatNumber, vatStatus: data.vatNumber ? "REGISTERED" : "NOT_REGISTERED" } : {}),
+          ...(data.taxInclusive !== undefined ? { pricingMode: data.taxInclusive ? "TAX_INCLUSIVE" : "TAX_EXCLUSIVE" } : {}),
+        },
+        create: {
+          businessId: tenant.businessId,
+          legalName: data.legalName || business.name,
+          registeredAddress: business.address || "",
+          tin: data.taxNumber || "",
+          vatRegistrationNumber: data.vatNumber || "",
+          vatStatus: data.vatNumber ? "REGISTERED" : "NOT_REGISTERED",
+          pricingMode: data.taxInclusive ? "TAX_INCLUSIVE" : "TAX_EXCLUSIVE",
+        },
+      });
+    }
 
     return NextResponse.json({ success: true, business });
   } catch (error: any) {

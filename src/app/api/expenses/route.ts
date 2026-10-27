@@ -2,10 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTenantContext } from "@/lib/tenant";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
+import { createExpenseEntry } from "@/lib/accounting";
+import { issueInputDocument, type InputDocumentLine } from "@/lib/tax/document-service";
+import { allocateDocumentNumber } from "@/lib/tax/sequence-service";
+import { toErrorResponse, TaxError } from "@/lib/tax/errors";
 
 const expenseSchema = z.object({
   description: z.string().min(1),
   amount: z.number().positive(),
+  taxableAmount: z.number().optional().nullable(),
+  taxAmount: z.number().optional().default(0),
+  taxRatePercent: z.number().optional().nullable(),
+  inputVatEligibility: z.enum(["ELIGIBLE", "INELIGIBLE", "UNDER_REVIEW"]).optional().default("UNDER_REVIEW"),
+  vendorName: z.string().optional().nullable(),
+  vendorTin: z.string().optional().nullable(),
+  vendorInvoiceNo: z.string().optional().nullable(),
   categoryId: z.string().optional().nullable(),
   branchId: z.string().optional().nullable(),
   method: z.enum(["CASH", "CARD", "BANK_TRANSFER", "QR_CODE", "CHEQUE", "ONLINE"]).default("CASH"),
@@ -78,6 +89,11 @@ export async function GET(req: NextRequest) {
         receipt: e.receipt,
         notes: e.notes,
         status: e.status,
+        inputVatEligibility: e.inputVatEligibility,
+        taxAmount: Number(e.taxAmount || 0),
+        vendorName: e.vendorName,
+        vendorTin: e.vendorTin,
+        vendorInvoiceNo: e.vendorInvoiceNo,
         expenseDate: e.expenseDate.toISOString(),
         createdAt: e.createdAt.toISOString(),
       })),
@@ -96,7 +112,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("Expenses GET error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return toErrorResponse(error);
   }
 }
 
@@ -139,47 +155,106 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No branch found" }, { status: 400 });
     }
 
-    const expense = await prisma.expense.create({
-      data: {
-        businessId: tenant.businessId,
-        branchId: effectiveBranchId,
-        categoryId: data.categoryId || null,
-        userId: tenant.userId,
-        description: data.description,
-        amount: data.amount,
-        method: data.method as any,
-        reference: data.reference || null,
-        receipt: data.receipt || null,
-        notes: data.notes || null,
-        status: data.status as any,
-        expenseDate: data.expenseDate ? new Date(data.expenseDate) : new Date(),
-      },
-      include: {
-        category: { select: { name: true, color: true } },
-        branch: { select: { name: true } },
-      },
-    });
+    const expenseDate = data.expenseDate ? new Date(data.expenseDate) : new Date();
+    const taxableAmount =
+      data.taxableAmount !== undefined && data.taxableAmount !== null
+        ? data.taxableAmount
+        : data.amount - (data.taxAmount || 0);
 
-    // Create accounting entry if expense is paid
-    if (expense.status === "PAID") {
-      try {
-        const { createExpenseEntry } = await import("@/lib/accounting");
-        await createExpenseEntry({
+    const expense = await prisma.$transaction(async (tx) => {
+      const exp = await tx.expense.create({
+        data: {
           businessId: tenant.businessId,
-          expenseId: expense.id,
-          amount: Number(expense.amount),
-          description: expense.description,
-          method: expense.method,
+          branchId: effectiveBranchId,
+          categoryId: data.categoryId || null,
+          userId: tenant.userId,
+          description: data.description,
+          amount: data.amount,
+          taxableAmount,
+          taxAmount: data.taxAmount || 0,
+          taxRatePercent: data.taxRatePercent || null,
+          inputVatEligibility: data.inputVatEligibility as any,
+          vendorName: data.vendorName || null,
+          vendorTin: data.vendorTin || null,
+          vendorInvoiceNo: data.vendorInvoiceNo || null,
+          method: data.method as any,
+          reference: data.reference || null,
+          receipt: data.receipt || null,
+          notes: data.notes || null,
+          status: data.status as any,
+          expenseDate,
+        },
+        include: {
+          category: { select: { name: true, color: true } },
+          branch: { select: { name: true } },
+        },
+      });
+
+      // Record INPUT TaxDocument if tax applies or Input VAT is tracked
+      if (data.taxAmount > 0 || data.inputVatEligibility === "ELIGIBLE") {
+        const expNumAlloc = await allocateDocumentNumber(tx, {
+          businessId: tenant.businessId,
+          documentType: "EXPENSE",
+          prefix: "EXP",
+          issueDate: expenseDate,
+          resetPeriod: "YEARLY",
         });
-      } catch (accError) {
-        console.warn("Accounting entry failed for expense:", accError);
+
+        const line: InputDocumentLine = {
+          description: data.description,
+          quantity: 1,
+          unitPrice: taxableAmount,
+          taxableValue: taxableAmount.toFixed(2),
+          taxAmount: (data.taxAmount || 0).toFixed(2),
+          ratePercent: data.taxRatePercent || (taxableAmount > 0 ? ((data.taxAmount || 0) / taxableAmount) * 100 : 0),
+          treatment: (data.taxAmount || 0) > 0 ? "STANDARD_RATED" : "OUT_OF_SCOPE",
+        };
+
+        await issueInputDocument(tx, {
+          businessId: tenant.businessId,
+          branchId: effectiveBranchId,
+          documentType: data.vendorTin ? "TAX_INVOICE" : "COMMERCIAL_INVOICE",
+          documentNumber: expNumAlloc.documentNumber,
+          externalDocumentNo: data.vendorInvoiceNo || null,
+          issueDate: expenseDate,
+          supplyDate: expenseDate,
+          supplier: {
+            name: data.vendorName || "Expense Vendor",
+            tin: data.vendorTin || null,
+          },
+          buyerName: tenant.businessName,
+          pricesIncludeTax: false,
+          inputVatEligibility: data.inputVatEligibility as any,
+          expenseId: exp.id,
+          lines: [line],
+          paidAmount: data.amount,
+          paymentMethod: data.method,
+          notes: data.notes,
+          createdById: tenant.userId,
+        });
       }
-    }
+
+      // Record Double-Entry Accounting entry if expense is marked PAID
+      if (exp.status === "PAID") {
+        await createExpenseEntry({
+          tx,
+          businessId: tenant.businessId,
+          expenseId: exp.id,
+          amount: Number(exp.amount),
+          taxAmount: Number(data.taxAmount || 0),
+          inputVatEligible: data.inputVatEligibility === "ELIGIBLE",
+          description: exp.description,
+          method: exp.method,
+        });
+      }
+
+      return exp;
+    });
 
     return NextResponse.json({ expense }, { status: 201 });
   } catch (error: any) {
     console.error("Expenses POST error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return toErrorResponse(error);
   }
 }
 
@@ -189,30 +264,58 @@ export async function PATCH(req: NextRequest) {
     if (!tenant) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
-    const { id, ...updates } = body;
+    const { id, description, notes, categoryId, receipt, reference, status, inputVatEligibility } = body;
 
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
-    // Verify ownership
     const existing = await prisma.expense.findFirst({
       where: { id, businessId: tenant.businessId },
     });
-    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!existing) return NextResponse.json({ error: "Expense not found" }, { status: 404 });
 
-    const expense = await prisma.expense.update({
-      where: { id },
-      data: {
-        ...updates,
-        amount: updates.amount !== undefined ? Number(updates.amount) : undefined,
-        expenseDate: updates.expenseDate ? new Date(updates.expenseDate) : undefined,
-        approvedById: updates.status === "APPROVED" ? tenant.userId : undefined,
-        approvedAt: updates.status === "APPROVED" ? new Date() : undefined,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      const updateData: any = {};
+      if (description !== undefined) updateData.description = description;
+      if (notes !== undefined) updateData.notes = notes;
+      if (categoryId !== undefined) updateData.categoryId = categoryId;
+      if (receipt !== undefined) updateData.receipt = receipt;
+      if (reference !== undefined) updateData.reference = reference;
+
+      if (status !== undefined) {
+        updateData.status = status;
+        if (status === "APPROVED") {
+          updateData.approvedById = tenant.userId;
+          updateData.approvedAt = new Date();
+        }
+      }
+
+      // If transitioning to PAID, trigger accounting
+      const becomingPaid = existing.status !== "PAID" && status === "PAID";
+
+      const updated = await tx.expense.update({
+        where: { id },
+        data: updateData,
+      });
+
+      if (becomingPaid) {
+        await createExpenseEntry({
+          tx,
+          businessId: tenant.businessId,
+          expenseId: updated.id,
+          amount: Number(updated.amount),
+          taxAmount: Number(updated.taxAmount || 0),
+          inputVatEligible: updated.inputVatEligibility === "ELIGIBLE",
+          description: updated.description,
+          method: updated.method,
+        });
+      }
+
+      return updated;
     });
 
-    return NextResponse.json({ expense });
+    return NextResponse.json({ expense: result });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return toErrorResponse(error);
   }
 }
 
@@ -228,11 +331,18 @@ export async function DELETE(req: NextRequest) {
     const existing = await prisma.expense.findFirst({
       where: { id, businessId: tenant.businessId },
     });
-    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!existing) return NextResponse.json({ error: "Expense not found" }, { status: 404 });
+
+    if (existing.status === "PAID") {
+      return NextResponse.json(
+        { error: "Paid expenses with general ledger or tax postings cannot be deleted. Review or cancel instead." },
+        { status: 400 }
+      );
+    }
 
     await prisma.expense.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return toErrorResponse(error);
   }
 }

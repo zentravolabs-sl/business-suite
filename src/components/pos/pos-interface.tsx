@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   Search,
   Barcode,
@@ -20,6 +20,8 @@ import {
   Wifi,
   WifiOff,
   RefreshCw,
+  Tag,
+  Database,
 } from "lucide-react";
 import { formatCurrency, cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -27,6 +29,17 @@ import { ShiftModal } from "./shift-modal";
 import { HeldBillsModal } from "./held-bills-modal";
 import { PaymentModal } from "./payment-modal";
 import { ThermalReceiptModal } from "./thermal-receipt-modal";
+import { SyncDashboardModal } from "./sync-dashboard-modal";
+import { usePermissions } from "@/hooks/use-permissions";
+import { PERMISSIONS } from "@/lib/permissions";
+import { getPosDatabase } from "@/lib/pos/offline-db";
+import {
+  PosSyncEngine,
+  SyncStats,
+  NetworkReachability,
+  checkStorageQuota,
+} from "@/lib/pos/sync-engine";
+import { cacheDeviceSession } from "@/lib/pos/device-auth";
 
 export interface PosProduct {
   id: string;
@@ -68,17 +81,25 @@ interface PosInterfaceProps {
   branches: { id: string; name: string }[];
   activeBranchId: string;
   cashierName: string;
+  businessId?: string;
+  userId?: string;
 }
 
 export function PosInterface({
   initialProducts,
-  categories,
+  categories: initialCategories,
   branches,
   activeBranchId,
   cashierName,
+  businessId = "default-business",
+  userId = "cashier",
 }: PosInterfaceProps) {
+  const { can, permissions, isOwner, roleName } = usePermissions();
+  const canApplyDiscount = can(PERMISSIONS.POS_APPLY_DISCOUNT);
+
   const [branchId, setBranchId] = useState(activeBranchId);
-  const [products] = useState<PosProduct[]>(initialProducts);
+  const [products, setProducts] = useState<PosProduct[]>(initialProducts);
+  const [categories, setCategories] = useState<PosCategory[]>(initialCategories);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
@@ -93,106 +114,115 @@ export function PosInterface({
   const [showPayment, setShowPayment] = useState(false);
   const [completedSale, setCompletedSale] = useState<any | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [showSyncCenter, setShowSyncCenter] = useState(false);
 
-  // Offline mode and sync state
-  const [isOnline, setIsOnline] = useState(true);
-  const [offlineQueueCount, setOfflineQueueCount] = useState(0);
-  const [isSyncing, setIsSyncing] = useState(false);
+  // Sync Engine & Stats
+  const [syncEngine, setSyncEngine] = useState<PosSyncEngine | null>(null);
+  const [syncStats, setSyncStats] = useState<SyncStats>({
+    pendingCount: 0,
+    syncingCount: 0,
+    syncedCount: 0,
+    failedCount: 0,
+    lastSuccessfulSyncAt: null,
+    reachability: "CHECKING",
+  });
 
-  const updateOfflineCount = () => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("zentravo_offline_sales") || "[]");
-      setOfflineQueueCount(stored.length);
-    } catch {
-      setOfflineQueueCount(0);
-    }
-  };
+  // Storage Quota Warning
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
 
-  const syncOfflineSales = async () => {
-    if (isSyncing) return;
-    try {
-      const stored = JSON.parse(localStorage.getItem("zentravo_offline_sales") || "[]");
-      if (!stored.length) {
-        toast.info("No offline sales to sync.");
-        return;
-      }
-      setIsSyncing(true);
-      let successCount = 0;
-      const remaining: any[] = [];
-
-      for (const salePayload of stored) {
-        try {
-          const res = await fetch("/api/pos/sale", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(salePayload),
-          });
-          const data = await res.json();
-          if (res.ok || data.alreadyProcessed) {
-            successCount++;
-          } else {
-            remaining.push(salePayload);
-          }
-        } catch {
-          remaining.push(salePayload);
-        }
-      }
-
-      localStorage.setItem("zentravo_offline_sales", JSON.stringify(remaining));
-      setOfflineQueueCount(remaining.length);
-
-      if (successCount > 0) {
-        toast.success(`Synced ${successCount} offline sale(s) to server!`);
-        fetchShift();
-      }
-      if (remaining.length > 0) {
-        toast.warning(`${remaining.length} sale(s) could not be synced.`);
-      }
-    } catch (e: any) {
-      toast.error("Sync error: " + e.message);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
+  // Initialize Sync Engine & Session caching
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      setIsOnline(navigator.onLine);
-      updateOfflineCount();
+    if (typeof window === "undefined") return;
 
-      const handleOnline = () => {
-        setIsOnline(true);
-        toast.success("Internet connection restored. Auto-syncing...");
-        syncOfflineSales();
-      };
-      const handleOffline = () => {
-        setIsOnline(false);
-        toast.warning("Internet disconnected. POS running in offline mode.");
-      };
-      const handleUpdateEvent = () => {
-        updateOfflineCount();
-      };
+    const engine = new PosSyncEngine(businessId);
+    setSyncEngine(engine);
 
-      window.addEventListener("online", handleOnline);
-      window.addEventListener("offline", handleOffline);
-      window.addEventListener("offline_sales_updated", handleUpdateEvent);
+    const unsubscribe = engine.subscribe((stats) => {
+      setSyncStats(stats);
+    });
 
-      return () => {
-        window.removeEventListener("online", handleOnline);
-        window.removeEventListener("offline", handleOffline);
-        window.removeEventListener("offline_sales_updated", handleUpdateEvent);
-      };
+    engine.start();
+
+    // Cache authenticated session for offline authorization
+    cacheDeviceSession({
+      businessId,
+      branchId,
+      userId,
+      userName: cashierName,
+      roleName: roleName || "Cashier",
+      isOwner,
+      permissions,
+    }).catch(console.error);
+
+    // Initial catalog sync to Dexie
+    engine.syncCatalog(branchId).then(() => {
+      hydrateFromLocalDexie();
+    });
+
+    // Check storage quota
+    checkStorageQuota().then((q) => {
+      if (!q.safe && q.warning) {
+        setStorageWarning(q.warning);
+        toast.error(q.warning);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      engine.stop();
+    };
+  }, [businessId, branchId, userId, cashierName, isOwner, roleName, permissions]);
+
+  // Hydrate catalog from Dexie if local has more recent data or when offline
+  const hydrateFromLocalDexie = async () => {
+    try {
+      const db = getPosDatabase();
+      const localProducts = await db.products
+        .where("[businessId+branchId]")
+        .equals([businessId, branchId])
+        .toArray();
+
+      if (localProducts.length > 0) {
+        setProducts(
+          localProducts.map((p) => ({
+            id: p.id,
+            name: p.name,
+            sku: p.sku,
+            barcode: p.barcode,
+            categoryName: p.categoryName,
+            categoryId: p.categoryId,
+            costPrice: p.costPrice,
+            retailPrice: p.retailPrice,
+            isSerialTracked: p.isSerialTracked,
+            warrantyMonths: p.warrantyMonths,
+            stockQuantity: p.stockQuantity,
+          }))
+        );
+      }
+
+      const localCategories = await db.categories
+        .where("businessId")
+        .equals(businessId)
+        .toArray();
+
+      if (localCategories.length > 0) {
+        setCategories(localCategories.map((c) => ({ id: c.id, name: c.name })));
+      }
+    } catch (e) {
+      console.error("Dexie catalog hydration error:", e);
     }
-  }, []);
+  };
 
   // Fetch current shift status
   const fetchShift = async () => {
     try {
       const res = await fetch(`/api/pos/shift?branchId=${branchId}`);
-      const data = await res.json();
-      setShift(data.shift);
+      if (res.ok) {
+        const data = await res.json();
+        setShift(data.shift);
+      }
     } catch {
-      // ignore
+      // offline: retain current shift state or allow continuation
     }
   };
 
@@ -205,7 +235,7 @@ export function PosInterface({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "F9") {
         e.preventDefault();
-        if (cart.length > 0 && shift) {
+        if (cart.length > 0) {
           setShowPayment(true);
         }
       } else if (e.key === "Escape" && showReceipt) {
@@ -215,7 +245,7 @@ export function PosInterface({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [cart, shift, showReceipt]);
+  }, [cart, showReceipt]);
 
   // Add product to cart
   const addToCart = (product: PosProduct) => {
@@ -296,6 +326,36 @@ export function PosInterface({
     );
   };
 
+  const updateDiscount = (productId: string) => {
+    if (!canApplyDiscount) {
+      toast.error("You do not have permission to apply discounts.");
+      return;
+    }
+
+    const item = cart.find((i) => i.productId === productId);
+    if (!item) return;
+
+    const input = prompt(`Enter discount amount in Rs. for "${item.name}":`, String(item.discountAmount || 0));
+    if (input === null) return;
+
+    const amount = parseFloat(input);
+    if (isNaN(amount) || amount < 0) {
+      toast.error("Please enter a valid positive discount amount.");
+      return;
+    }
+
+    const maxDiscount = item.quantity * item.unitPrice;
+    if (amount > maxDiscount) {
+      toast.error(`Discount cannot exceed line total (${formatCurrency(maxDiscount)})`);
+      return;
+    }
+
+    setCart((prev) =>
+      prev.map((i) => (i.productId === productId ? { ...i, discountAmount: amount } : i))
+    );
+    toast.success("Discount applied");
+  };
+
   const updateSerial = (productId: string, serial: string) => {
     setCart((prev) =>
       prev.map((item) =>
@@ -334,24 +394,42 @@ export function PosInterface({
       toast.success("Bill parked on hold");
       setCart([]);
     } catch {
-      toast.error("Failed to hold bill");
+      toast.error("Failed to hold bill online");
     }
   };
 
   // Filter products for catalog grid
-  const filteredProducts = products.filter((p) => {
-    const matchesSearch =
-      !search ||
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      (p.sku && p.sku.toLowerCase().includes(search.toLowerCase())) ||
-      p.barcode.includes(search);
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      const matchesSearch =
+        !search ||
+        p.name.toLowerCase().includes(search.toLowerCase()) ||
+        (p.sku && p.sku.toLowerCase().includes(search.toLowerCase())) ||
+        p.barcode.includes(search);
 
-    const matchesCat = selectedCategory === "ALL" || p.categoryId === selectedCategory;
-    return matchesSearch && matchesCat;
-  });
+      const matchesCat = selectedCategory === "ALL" || p.categoryId === selectedCategory;
+      return matchesSearch && matchesCat;
+    });
+  }, [products, search, selectedCategory]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-7rem)] overflow-hidden gap-3">
+      {/* Storage Quota Alert Banner if Critical */}
+      {storageWarning && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs font-semibold text-destructive flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{storageWarning}</span>
+          </div>
+          <button
+            onClick={() => setStorageWarning(null)}
+            className="text-[10px] hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* 1. POS Top Bar */}
       <div className="flex items-center justify-between rounded-2xl border bg-card px-4 py-2.5 shadow-sm">
         <div className="flex items-center gap-3">
@@ -380,40 +458,65 @@ export function PosInterface({
           </span>
         </div>
 
-        {/* Right actions: Shift control, Offline Sync, & Held bills */}
+        {/* Right actions: Connectivity Badge, Sync Center Trigger, Shift & Parked Bills */}
         <div className="flex items-center gap-2">
-          {/* Online / Offline status & Sync button */}
+          {/* Online / Offline Status Badge */}
           <div className="flex items-center gap-1.5 mr-1">
-            {isOnline ? (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+            {syncStats.reachability === "ONLINE" && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/20 px-2.5 py-1 rounded-full">
                 <Wifi className="h-3 w-3" />
                 <span className="hidden sm:inline">Online</span>
               </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 bg-amber-50 dark:bg-amber-950/40 border border-amber-500/30 px-2 py-0.5 rounded-full animate-pulse">
+            )}
+            {syncStats.reachability === "SERVER_UNREACHABLE" && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 bg-amber-50 dark:bg-amber-950/40 border border-amber-500/30 px-2.5 py-1 rounded-full animate-pulse">
+                <AlertTriangle className="h-3 w-3" />
+                <span>Server Unreachable</span>
+              </span>
+            )}
+            {syncStats.reachability === "OFFLINE" && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-destructive bg-destructive/10 border border-destructive/30 px-2.5 py-1 rounded-full">
                 <WifiOff className="h-3 w-3" />
                 <span>Offline</span>
               </span>
             )}
-
-            {offlineQueueCount > 0 && (
-              <button
-                onClick={syncOfflineSales}
-                disabled={isSyncing}
-                title="Sync offline transactions to cloud"
-                className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500 text-white px-2.5 py-1 rounded-lg hover:bg-amber-600 transition-colors shadow-xs"
-              >
-                <RefreshCw className={cn("h-3 w-3", isSyncing && "animate-spin")} />
-                <span>Sync {offlineQueueCount} Sale{offlineQueueCount > 1 ? "s" : ""}</span>
-              </button>
+            {syncStats.reachability === "CHECKING" && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 bg-blue-50 dark:bg-blue-950/40 border border-blue-500/30 px-2.5 py-1 rounded-full">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                <span>Checking</span>
+              </span>
             )}
+
+            {/* Sync Center Trigger Button */}
+            <button
+              onClick={() => setShowSyncCenter(true)}
+              className={cn(
+                "inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1 rounded-lg border transition-all shadow-xs",
+                syncStats.pendingCount > 0 || syncStats.failedCount > 0
+                  ? "bg-amber-500 text-white border-amber-600 hover:bg-amber-600"
+                  : "bg-muted/40 hover:bg-muted text-foreground"
+              )}
+            >
+              <Database className={cn("h-3.5 w-3.5", syncStats.syncingCount > 0 && "animate-spin text-primary")} />
+              <span>Sync Center</span>
+              {syncStats.pendingCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-white text-amber-700 text-[10px] font-black">
+                  {syncStats.pendingCount}
+                </span>
+              )}
+              {syncStats.failedCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[10px] font-black">
+                  {syncStats.failedCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {shift ? (
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-600">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Shift Active (Drawer: {formatCurrency(shift.expectedCash)})
+                Shift Active
               </span>
               <button
                 onClick={() => {
@@ -431,10 +534,10 @@ export function PosInterface({
                 setShiftModalMode("OPEN");
                 setShowShiftModal(true);
               }}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-white shadow hover:bg-amber-600 transition-colors animate-bounce"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-white shadow hover:bg-amber-600 transition-colors"
             >
               <AlertTriangle className="h-3.5 w-3.5" />
-              Open Shift to Start POS
+              Open Shift
             </button>
           )}
 
@@ -443,7 +546,7 @@ export function PosInterface({
             className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1 text-xs font-semibold hover:bg-muted transition-colors"
           >
             <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-            Parked Bills
+            Parked
           </button>
         </div>
       </div>
@@ -491,7 +594,7 @@ export function PosInterface({
                   : "bg-muted text-muted-foreground hover:bg-muted/80"
               )}
             >
-              All Items
+              All Items ({products.length})
             </button>
             {categories.map((c) => (
               <button
@@ -607,12 +710,19 @@ export function PosInterface({
                       </div>
                     </div>
 
-                    <div className="font-extrabold text-xs text-primary">
-                      {formatCurrency(item.quantity * item.unitPrice)}
+                    <div className="text-right">
+                      <div className="font-extrabold text-xs text-primary">
+                        {formatCurrency(item.quantity * item.unitPrice - (item.discountAmount || 0))}
+                      </div>
+                      {item.discountAmount > 0 && (
+                        <div className="text-[10px] text-emerald-600 font-semibold">
+                          -{formatCurrency(item.discountAmount)}
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Quantity and Serial assignment controls */}
+                  {/* Quantity, Discount & Serial assignment controls */}
                   <div className="flex items-center justify-between pt-1 border-t">
                     <div className="flex items-center gap-1">
                       <button
@@ -629,6 +739,24 @@ export function PosInterface({
                         <Plus className="h-3 w-3" />
                       </button>
                     </div>
+
+                    {/* Discount button */}
+                    {canApplyDiscount && (
+                      <button
+                        type="button"
+                        onClick={() => updateDiscount(item.productId)}
+                        className={cn(
+                          "flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors",
+                          item.discountAmount > 0
+                            ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                            : "bg-muted/40 text-muted-foreground hover:bg-muted"
+                        )}
+                        title="Apply item discount"
+                      >
+                        <Tag className="h-3 w-3" />
+                        <span>{item.discountAmount > 0 ? "Disc: Rs." + item.discountAmount : "Disc"}</span>
+                      </button>
+                    )}
 
                     {/* Serial number prompt if serialized */}
                     {item.isSerialTracked ? (
@@ -664,6 +792,13 @@ export function PosInterface({
               <span>{formatCurrency(subtotal)}</span>
             </div>
 
+            {totalDiscount > 0 && (
+              <div className="flex justify-between text-emerald-600 font-medium">
+                <span>Total Discount:</span>
+                <span>-{formatCurrency(totalDiscount)}</span>
+              </div>
+            )}
+
             <div className="border-t pt-1.5 flex justify-between text-base font-extrabold">
               <span>Total Payable:</span>
               <span className="text-primary">{formatCurrency(total)}</span>
@@ -671,7 +806,7 @@ export function PosInterface({
 
             <button
               type="button"
-              disabled={cart.length === 0 || !shift}
+              disabled={cart.length === 0}
               onClick={() => setShowPayment(true)}
               className="w-full mt-2 flex items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-extrabold text-primary-foreground shadow-lg hover:bg-primary/90 transition-all disabled:opacity-50"
             >
@@ -710,6 +845,9 @@ export function PosInterface({
           total,
         }}
         branchId={branchId}
+        businessId={businessId}
+        reachability={syncStats.reachability}
+        syncEngine={syncEngine}
         onSaleComplete={(sale) => {
           setCompletedSale(sale);
           setShowReceipt(true);
@@ -724,6 +862,18 @@ export function PosInterface({
           setCart([]);
           setCompletedSale(null);
           fetchShift();
+        }}
+      />
+
+      <SyncDashboardModal
+        open={showSyncCenter}
+        onOpenChange={setShowSyncCenter}
+        businessId={businessId}
+        syncEngine={syncEngine}
+        syncStats={syncStats}
+        onSyncTriggered={() => {
+          fetchShift();
+          hydrateFromLocalDexie();
         }}
       />
     </div>
