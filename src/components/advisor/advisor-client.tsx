@@ -321,6 +321,22 @@ export function AdvisorClient() {
     );
   }
 
+  if (!dashboardData) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[450px] space-y-4 p-8 text-center border rounded-2xl bg-card">
+        <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto" />
+        <h3 className="text-lg font-bold">Unable to Load Business Intelligence</h3>
+        <p className="text-sm text-muted-foreground max-w-md">
+          Could not fetch financial analytics from the server. Please check your connection or sync metrics.
+        </p>
+        <Button onClick={fetchDashboard} disabled={refreshing}>
+          <RefreshCw className={cn("w-4 h-4 mr-2", refreshing && "animate-spin")} />
+          Retry Sync
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 pb-12">
       {/* Top Header Banner */}
@@ -524,10 +540,10 @@ export function AdvisorClient() {
             <CardContent className="space-y-3">
               <p className="text-sm md:text-base font-medium leading-relaxed">
                 {todaySummary?.noActivity
-                  ? `No transactions recorded yet today (${snapshot?.today}). Prior 30-day daily average net revenue is ${formatCurrency((last30?.netRevenue || 0) / 30, currency)}.`
-                  : `Your business generated ${formatCurrency(todaySummary?.netRevenue || 0, currency)} in net revenue across ${formatNumber(todaySummary?.transactions || 0)} transactions today. Gross profit stands at ${todaySummary?.grossProfit !== null ? formatCurrency(todaySummary?.grossProfit, currency) : "Estimated"} (${todaySummary?.grossMarginPct ?? 0}% margin).`}
+                  ? `No transactions recorded yet today (${snapshot?.today || "N/A"}). Prior 30-day daily average net revenue is ${formatCurrency((last30?.netRevenue || 0) / 30, currency)}.`
+                  : `Your business generated ${formatCurrency(todaySummary?.netRevenue || 0, currency)} in net revenue across ${formatNumber(todaySummary?.transactions || 0)} transactions today. Gross profit stands at ${typeof todaySummary?.grossProfit === "number" ? formatCurrency(todaySummary.grossProfit, currency) : "Estimated"} (${todaySummary?.grossMarginPct ?? 0}% margin).`}
               </p>
-              {todaySummary?.notes?.length > 0 && (
+              {Array.isArray(todaySummary?.notes) && todaySummary.notes.length > 0 && (
                 <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0" />
                   <span>Data Disclosure: {todaySummary.notes.join(" • ")}</span>
@@ -560,16 +576,18 @@ export function AdvisorClient() {
                 <div className="flex items-center justify-between">
                   <CardDescription className="text-xs uppercase tracking-wider font-semibold">Gross Profit & Margin</CardDescription>
                   <Badge variant={todaySummary?.grossStatus === "COMPLETE" ? "default" : "secondary"} className="text-[10px]">
-                    {todaySummary?.grossStatus}
+                    {todaySummary?.grossStatus || "ESTIMATED"}
                   </Badge>
                 </div>
                 <CardTitle className="text-2xl font-bold">
-                  {todaySummary?.grossProfit !== null ? formatCurrency(todaySummary.grossProfit, currency) : "Estimated"}
+                  {typeof todaySummary?.grossProfit === "number"
+                    ? formatCurrency(todaySummary.grossProfit, currency)
+                    : "Estimated"}
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Margin: {todaySummary?.grossMarginPct !== null ? `${todaySummary?.grossMarginPct}%` : "Pending"}</span>
+                  <span>Margin: {typeof todaySummary?.grossMarginPct === "number" ? `${todaySummary.grossMarginPct}%` : "Pending"}</span>
                   <span>Cost Coverage: {todaySummary?.costCoveragePct || 0}%</span>
                 </div>
               </CardContent>
@@ -857,16 +875,16 @@ export function AdvisorClient() {
                       <tr>
                         <td className="py-2.5 px-3 font-medium">Gross Profit</td>
                         <td className="py-2.5 px-3 font-bold text-emerald-600 dark:text-emerald-400">
-                          {selectedReport.data?.today?.grossProfit !== null ? formatCurrency(selectedReport.data?.today?.grossProfit, currency) : "N/A"}
+                          {typeof selectedReport.data?.today?.grossProfit === "number" ? formatCurrency(selectedReport.data.today.grossProfit, currency) : "N/A"}
                         </td>
                         <td className="py-2.5 px-3">
-                          {selectedReport.data?.yesterday?.grossProfit !== null ? formatCurrency(selectedReport.data?.yesterday?.grossProfit, currency) : "N/A"}
+                          {typeof selectedReport.data?.yesterday?.grossProfit === "number" ? formatCurrency(selectedReport.data.yesterday.grossProfit, currency) : "N/A"}
                         </td>
                         <td className="py-2.5 px-3">
-                          {selectedReport.data?.sameDayLastWeek?.grossProfit !== null ? formatCurrency(selectedReport.data?.sameDayLastWeek?.grossProfit, currency) : "N/A"}
+                          {typeof selectedReport.data?.sameDayLastWeek?.grossProfit === "number" ? formatCurrency(selectedReport.data.sameDayLastWeek.grossProfit, currency) : "N/A"}
                         </td>
                         <td className="py-2.5 px-3 text-muted-foreground">
-                          {selectedReport.data?.thirtyDayDailyAverage?.grossProfit !== null ? formatCurrency(selectedReport.data?.thirtyDayDailyAverage?.grossProfit, currency) : "N/A"}
+                          {typeof selectedReport.data?.thirtyDayDailyAverage?.grossProfit === "number" ? formatCurrency(selectedReport.data.thirtyDayDailyAverage.grossProfit, currency) : "N/A"}
                         </td>
                       </tr>
                       <tr>
