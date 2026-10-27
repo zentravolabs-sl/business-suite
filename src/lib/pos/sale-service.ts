@@ -137,7 +137,7 @@ export async function processSaleTransaction(
       // Find latest shift by user or create an automated shift for offline sync
       const latestShift = await prisma.cashierShift.findFirst({
         where: { businessId, branchId, userId },
-        orderBy: { createdAt: "desc" },
+        orderBy: { openedAt: "desc" },
       });
 
       if (latestShift) {
@@ -149,8 +149,7 @@ export async function processSaleTransaction(
             businessId,
             branchId,
             userId,
-            shiftNumber: 1,
-            startingCash: 0,
+            openingCash: 0,
             status: "OPEN",
             notes: "Automated POS Offline Sync Shift",
           },
@@ -561,7 +560,7 @@ export async function processSaleTransaction(
           entity: "Sale",
           entityId: sale.id,
           metadata: {
-            conflicts,
+            conflicts: conflicts as any,
             offlineId,
             officialInvoiceNumber,
             provisionalReceiptNumber: input.provisionalReceiptNumber,
